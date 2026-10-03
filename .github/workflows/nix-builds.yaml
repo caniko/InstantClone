@@ -50,7 +50,7 @@ jobs:
           git config --global --add url.https://github.com/.insteadOf git@github.com:
 
       - name: Project setup
-        run: nix run github:caniko/simit/d560f909b450c629b527ee0409f2826c477a5649 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
+        run: nix run --max-jobs 1 --cores 2 github:caniko/simit/d560f909b450c629b527ee0409f2826c477a5649 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
 
       - name: Build ${{ matrix.installable }}
         env:
@@ -64,6 +64,9 @@ jobs:
           exec 3>&-
           wait "$log_pid"
           exit "$status"
+      - name: Retain Nix results 1
+        run: |
+          python3 tests/managed/retain.py
       - name: Upload Nix build evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -14,7 +14,7 @@ root = Path(__file__).resolve().parents[2]
 assets = root / 'src'
 fixture = r"""
 const states = Object.fromEntries(['landscape','portrait'].map(id => [id, {
-  phase:'idle', ingest_alive:true, current_delay_ms:0, stats:{bitrate_kbps:6000},
+  phase:'idle', ingest_alive:true, ingest_key_set:false, current_delay_ms:0, stats:{bitrate_kbps:6000},
   destinations:['Twitch','YouTube','Kick','Rumble'].map((name,index) => ({
     id:name,name,platform:name.toLowerCase(),enabled:true,alive:index!==2,
     video_res:id==='portrait'?'1080x1920':'1920x1080',bytes_sent:1000,bitrate_kbps:6000,reconnects:index===2?2:0
@@ -47,12 +47,20 @@ setTimeout(async()=>{
     assert(!document.querySelector('#feedback').textContent.includes('accepted'),'False success');
     rejectAction=false; button.click(); await new Promise(resolve=>setTimeout(resolve,50));
     assert(states.landscape.phase==='preparing' && states.portrait.phase==='idle','Action scope crossed programs');
+    document.querySelector('#diagnostics').open=true;
+    const setupLine=document.querySelector('#setup').firstElementChild;
+    const range=document.createRange(); range.selectNodeContents(setupLine);
+    const selection=window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    const selectedText=selection.toString();
+    assert(selectedText.includes('rtmp://127.0.0.1:1935/live'),'Setup address unavailable to copy');
     portraitOffline=true;
     await new Promise(resolve=>setTimeout(resolve,1500));
     document.querySelector('#scope').value='portrait';
     document.querySelector('#scope').dispatchEvent(new Event('change'));
     assert([...document.querySelectorAll('[data-action]')].every(button=>button.disabled),'Offline controls enabled');
     assert(document.querySelector('#attention').textContent.includes('Portrait: Relay unavailable'),'Offline state hidden');
+    assert(document.querySelector('#setup').firstElementChild===setupLine,'Unchanged setup node replaced');
+    assert(selection.toString()===selectedText,'Setup copy selection cleared by polling');
     assert(!document.documentElement.dataset.error,'Browser exception');
     document.documentElement.dataset.test='PASS';
   } catch(error) {document.documentElement.dataset.test=error.message;}

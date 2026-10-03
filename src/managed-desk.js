@@ -93,7 +93,12 @@ if (typeof document !== 'undefined') {
     if (!rows.length) { const tr=document.createElement('tr'), td=node('td','No destinations available. Open setup & diagnostics.','muted'); td.colSpan=3; tr.append(td); $('destinations').append(tr); }
     $('attention').replaceChildren(...alerts.map(text=>node('p',text,'notice')));
     $('summary').textContent = !info ? 'Desk configuration unavailable · retrying' : alerts.length ? `${alerts.length} items need attention` : 'Local relay telemetry current';
-    if (info) $('setup').replaceChildren(...PROGRAMS.map(id=>node('p',`${label(id)}: ${programs[id].enabled ? `OBS custom output rtmp://127.0.0.1:${info[id].ingestPort}/live · ${ingestInstructions(fresh(programs[id],now) ? programs[id].state : null)}` : 'relay not enabled'}`)));
+    if (info) PROGRAMS.forEach((id,index)=>{
+      const text=`${label(id)}: ${programs[id].enabled ? `OBS custom output rtmp://127.0.0.1:${info[id].ingestPort}/live · ${ingestInstructions(fresh(programs[id],now) ? programs[id].state : null)}` : 'relay not enabled'}`;
+      const line=$('setup').children[index];
+      if (!line) $('setup').append(node('p',text));
+      else if (line.textContent !== text) line.textContent=text;
+    });
     const p=programs[$('scope').value], live=fresh(p,now), phase=p.state?.phase;
     $('delay').textContent=live ? `${label($('scope').value)} · ${(p.state.current_delay_ms/1000).toFixed(1)} s behind real time · ${phase}` : 'Current state unavailable · controls paused';
     if (live && p.state.safe_cut_pending) $('delay').textContent+=` · returning to real time in approximately ${Math.ceil(p.state.safe_cut_remaining_ms/1000)} s`;

@@ -25,6 +25,7 @@ jobs:
           - ".#packages.x86_64-linux.instantclone"
           - ".#checks.x86_64-linux.runtime"
           - ".#checks.x86_64-linux.runtime-dual"
+          - ".#checks.x86_64-linux.managed-security"
           - ".#checks.x86_64-linux.desk"
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"

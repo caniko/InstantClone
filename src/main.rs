@@ -38,6 +38,7 @@ mod managed;
 #[cfg(not(unix))]
 #[path = "managed_unsupported.rs"]
 mod managed;
+mod managed_routes;
 mod midi;
 mod obs_register;
 mod portcheck;
@@ -78,7 +79,7 @@ fn main() -> std::io::Result<()> {
         #[cfg(all(windows, not(debug_assertions)))]
         unsafe {
             use windows_sys::Win32::System::Console::{
-                AllocConsole, AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE,
+                ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE,
             };
             let h = GetStdHandle(STD_OUTPUT_HANDLE);
             if h.is_null() && AttachConsole(ATTACH_PARENT_PROCESS) == 0 {

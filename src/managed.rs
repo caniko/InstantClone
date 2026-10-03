@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Component, Path};
 
 pub fn enabled() -> bool {
     std::env::var("INSTANTCLONE_MANAGED").as_deref() == Ok("1")
@@ -14,6 +14,8 @@ fn invalid(message: &str) -> io::Error {
 }
 
 fn private_dir(path: &Path) -> io::Result<()> {
+    validate_state_path(path)?;
+    validate_private_directory(path)?;
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -25,7 +27,58 @@ fn private_dir(path: &Path) -> io::Result<()> {
             "InstantClone: state directory must be owned by this user",
         ));
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+    if meta.permissions().mode() & 0o777 != 0o700 {
+        return Err(invalid(
+            "InstantClone: existing state directory must already be private (0700)",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_state_path(path: &Path) -> io::Result<()> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| !matches!(c, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(invalid(
+            "InstantClone: state paths must be absolute without traversal",
+        ));
+    }
+    let mut current = std::path::PathBuf::new();
+    for component in path.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(invalid(
+                    "InstantClone: state paths must not contain symlinks",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn validate_private_directory(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            // SAFETY: geteuid has no preconditions.
+            if !meta.is_dir()
+                || meta.uid() != unsafe { libc::geteuid() }
+                || meta.permissions().mode() & 0o777 != 0o700
+            {
+                return Err(invalid(
+                    "InstantClone: existing state directory must already be owned and private (0700)",
+                ));
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn secret(path: &Path, name: &str) -> io::Result<String> {
@@ -137,23 +190,92 @@ pub fn prepare() -> io::Result<()> {
     let runtime = std::env::var("XDG_RUNTIME_DIR")
         .map_err(|_| invalid("InstantClone: XDG_RUNTIME_DIR is missing"))?;
     let path = Path::new(&config);
-    if !path.is_absolute() || !path.starts_with(&runtime) {
+    validate_state_path(path)?;
+    validate_state_path(Path::new(&runtime))?;
+    validate_private_directory(Path::new(&runtime))?;
+    if !path.starts_with(&runtime) || path.parent() == Some(Path::new(&runtime)) {
         return Err(invalid(
             "InstantClone: CONFIG_PATH must be inside XDG_RUNTIME_DIR",
         ));
     }
-    private_dir(
-        path.parent()
-            .ok_or_else(|| invalid("InstantClone: invalid CONFIG_PATH"))?,
-    )?;
     let text = fs::read_to_string(template)?;
     let fields: BTreeMap<_, _> = text
         .lines()
-        .filter_map(|line| line.split_once('='))
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| {
+            line.split_once('=')
+                .map(|(key, value)| (key.trim(), value.trim()))
+        })
         .collect();
+    let mut directories = vec![
+        path.parent()
+            .ok_or_else(|| invalid("InstantClone: invalid CONFIG_PATH"))?,
+    ];
+    for key in ["buffer_path", "overlays_dir"] {
+        let value = fields.get(key).ok_or_else(|| {
+            invalid("InstantClone: managed templates require explicit buffer_path and overlays_dir")
+        })?;
+        let state_path = Path::new(value);
+        validate_state_path(state_path)?;
+        directories.push(if key == "buffer_path" {
+            state_path
+                .parent()
+                .ok_or_else(|| invalid("InstantClone: invalid buffer path"))?
+        } else {
+            state_path
+        });
+    }
+    // Validate every destination before any directory creation or secret read.
+    for directory in &directories {
+        validate_private_directory(directory)?;
+    }
     let mut rendered = String::new();
     for line in text.lines() {
-        if let Some((key, value)) = line.split_once('=') {
+        if let Some((key, value)) = line
+            .trim()
+            .split_once('=')
+            .filter(|(key, _)| !key.starts_with('#'))
+            .map(|(key, value)| (key.trim(), value.trim()))
+        {
+            if key == "dock_token_file" {
+                let secret_path = value
+                    .strip_prefix("${XDG_RUNTIME_DIR}/")
+                    .map(|p| Path::new(&runtime).join(p))
+                    .unwrap_or_else(|| value.into());
+                rendered.push_str(&format!(
+                    "dock_token={}\n",
+                    control_token_file(&secret_path)?
+                ));
+                continue;
+            }
+            if key == "dashboard_password_hash_file" {
+                let secret_path = value
+                    .strip_prefix("${XDG_RUNTIME_DIR}/")
+                    .map(|p| Path::new(&runtime).join(p))
+                    .unwrap_or_else(|| value.into());
+                let hash = private_credential(&secret_path)?;
+                let parts: Vec<_> = hash.split('$').collect();
+                if parts.len() != 4
+                    || parts[0] != "pbkdf2-sha256"
+                    || !parts[1]
+                        .parse::<u32>()
+                        .ok()
+                        .is_some_and(|n| n > 0 && n <= 1_000_000)
+                    || parts[2].len() != 32
+                    || parts[3].len() != 64
+                    || !parts[2]
+                        .bytes()
+                        .chain(parts[3].bytes())
+                        .all(|b| b.is_ascii_hexdigit())
+                {
+                    return Err(invalid(
+                        "InstantClone: invalid dashboard password hash credential",
+                    ));
+                }
+                rendered.push_str(&format!("dashboard_password_hash={hash}\n"));
+                continue;
+            }
             if let Some(prefix) = key.strip_suffix(".stream_key_file") {
                 let name = fields
                     .get(format!("{prefix}.name").as_str())
@@ -186,19 +308,12 @@ pub fn prepare() -> io::Result<()> {
                 ));
                 continue;
             }
-            if key == "buffer_path" || key == "overlays_dir" {
-                let directory = if key == "buffer_path" {
-                    Path::new(value)
-                        .parent()
-                        .ok_or_else(|| invalid("InstantClone: invalid buffer path"))?
-                } else {
-                    Path::new(value)
-                };
-                private_dir(directory)?;
-            }
         }
         rendered.push_str(line);
         rendered.push('\n');
+    }
+    for directory in directories {
+        private_dir(directory)?;
     }
     let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
     let result = (|| {
@@ -217,9 +332,50 @@ pub fn prepare() -> io::Result<()> {
     result
 }
 
-/// Same-origin, fixed-target bridge for the two independent local relays.
-/// Never accepts a URL, forwards credentials, or proxies configuration/logs.
-pub async fn desk_request(method: &str, path: &str, body: &str) -> (&'static str, String) {
+fn private_credential(path: &Path) -> io::Result<String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| invalid("InstantClone: control credential unavailable"))?;
+    let meta = file.metadata()?;
+    // SAFETY: geteuid has no preconditions.
+    if !meta.is_file()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.permissions().mode() & 0o077 != 0
+        || meta.len() > 256
+    {
+        return Err(invalid(
+            "InstantClone: control credential must be private and user-owned",
+        ));
+    }
+    let mut text = String::new();
+    file.take(257).read_to_string(&mut text)?;
+    if let Some(value) = text
+        .strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix('\n'))
+    {
+        return Ok(value.to_owned());
+    }
+    Ok(text)
+}
+
+fn control_token_file(path: &Path) -> io::Result<String> {
+    let token = private_credential(path)?;
+    if !(16..=128).contains(&token.len()) || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(invalid("InstantClone: invalid control credential"));
+    }
+    Ok(token)
+}
+
+/// Authenticated callers may operate the configured programs. Peer credentials
+/// are explicit private files; administrator cookies are never forwarded.
+pub async fn desk_request(
+    method: &str,
+    path: &str,
+    body: &str,
+    settings: &crate::config::Settings,
+) -> (&'static str, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let unavailable = || {
         (
@@ -246,15 +402,7 @@ pub async fn desk_request(method: &str, path: &str, body: &str) -> (&'static str
         _ => return ("404 Not Found", "{}".into()),
     };
     let action = parts[2];
-    let allowed = match method {
-        "GET" => matches!(action, "state" | "destinations"),
-        "POST" => matches!(
-            action,
-            "arm" | "activate" | "disarm" | "stop" | "cut-after" | "cancel-cut"
-        ),
-        _ => false,
-    };
-    if !allowed
+    if !crate::managed_routes::control(method, path)
         || (action == "arm"
             && !(body
                 .strip_prefix("ms=")
@@ -276,10 +424,32 @@ pub async fn desk_request(method: &str, path: &str, body: &str) -> (&'static str
             r#"{"ok":false,"error":"Program is not configured."}"#.into(),
         );
     };
+    let token =
+        if port == settings.web_port {
+            settings.dock_token.clone()
+        } else if let Ok(file) =
+            std::env::var(format!("{}_TOKEN_FILE", variable.trim_end_matches("_PORT")))
+        {
+            match control_token_file(Path::new(&file)) {
+                Ok(token) => token,
+                Err(_) => return (
+                    "401 Unauthorized",
+                    r#"{"ok":false,"error":"Program control credential unavailable or invalid."}"#
+                        .into(),
+                ),
+            }
+        } else {
+            String::new()
+        };
+    let cookie = if token.is_empty() {
+        String::new()
+    } else {
+        format!("Cookie: ic_dock={token}\r\n")
+    };
     let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
         let mut socket = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await?;
         let action = if action == "cancel-cut" { "cut-after/cancel" } else { action };
-        let request = format!("{method} /{action} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        let request = format!("{method} /{action} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{cookie}Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
         socket.write_all(request.as_bytes()).await?;
         let mut bytes = Vec::new();
         socket.take(1_048_577).read_to_end(&mut bytes).await?;
@@ -293,6 +463,7 @@ pub async fn desk_request(method: &str, path: &str, body: &str) -> (&'static str
                 None => unavailable(),
             }
         }
+        Ok(Ok(response)) if response.starts_with("HTTP/1.1 401 ") || response.starts_with("HTTP/1.1 403 ") => ("401 Unauthorized", r#"{"ok":false,"error":"Program authentication required; check its control credential."}"#.into()),
         Ok(Ok(_)) => ("409 Conflict", r#"{"ok":false,"error":"Relay rejected the action; refresh its state before retrying."}"#.into()),
         _ => unavailable(),
     }
@@ -305,13 +476,14 @@ pub fn request_allowed(method: &str, path: &str) -> bool {
         return true;
     }
     if path.starts_with("/desk/") {
-        return matches!(method, "GET" | "POST");
+        return crate::managed_routes::control(method, path);
     }
     match method {
         "GET" => {
             matches!(
                 path,
                 "/" | "/dock"
+                    | "/login"
                     | "/dock.js"
                     | "/overlay-runtime.js"
                     | "/state"
@@ -333,7 +505,9 @@ pub fn request_allowed(method: &str, path: &str) -> bool {
         "POST" => {
             matches!(
                 path,
-                "/arm"
+                "/login"
+                    | "/logout"
+                    | "/arm"
                     | "/activate"
                     | "/stop"
                     | "/disarm"
@@ -352,18 +526,38 @@ pub fn request_allowed(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preparation_never_chmods_a_shared_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("instantclone-shared-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private_dir(&dir).is_err());
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn desk_rejects_arbitrary_targets_and_mutations() {
+        let settings = crate::config::Settings::defaults();
         for (method, path, body) in [
             ("GET", "/desk/portrait/config", ""),
             ("POST", "/desk/landscape/destinations", ""),
             ("POST", "/desk/portrait/arm", "ms=600001"),
             ("POST", "/desk/portrait/arm", "ms=1&extra=true"),
         ] {
-            assert_eq!(desk_request(method, path, body).await.0, "400 Bad Request");
+            assert_eq!(
+                desk_request(method, path, body, &settings).await.0,
+                "400 Bad Request"
+            );
         }
         assert_eq!(
-            desk_request("GET", "/desk/example.com/state", "").await.0,
+            desk_request("GET", "/desk/example.com/state", "", &settings)
+                .await
+                .0,
             "404 Not Found"
         );
     }
@@ -430,9 +624,11 @@ mod tests {
             fs::write(&path, bytes).unwrap();
             let err = server_url(&path, "test").unwrap_err().to_string();
             assert!(err.starts_with("InstantClone destination 'test':"));
-            assert!(!String::from_utf8_lossy(bytes)
-                .split_whitespace()
-                .any(|word| word.len() > 4 && err.contains(word)));
+            assert!(
+                !String::from_utf8_lossy(bytes)
+                    .split_whitespace()
+                    .any(|word| word.len() > 4 && err.contains(word))
+            );
         }
         fs::remove_dir_all(dir).unwrap();
     }

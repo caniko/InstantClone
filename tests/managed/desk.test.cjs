@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {fresh, orientation, destinationStatus} = require(process.env.DESK_JS || '../../src/managed-desk.js');
+const {fresh, orientation, destinationStatus, destinationRows} = require(process.env.DESK_JS || '../../src/managed-desk.js');
 const now = 10000;
 const program = {enabled:true, updated:now, previousUpdated:9000, state:{ingest_alive:true}};
 test('offline or stale telemetry never claims sending', () => {
@@ -9,6 +9,23 @@ test('offline or stale telemetry never claims sending', () => {
     assert.equal(fresh(p,now),false);
     assert.equal(destinationStatus(p,dest,{bytes_sent:100},now)[0],'Unknown · relay offline');
   }
+});
+test('duplicate display names preserve each independent destination', () => {
+  const dest = {platform:'youtube',name:'YouTube'};
+  const rows = destinationRows({
+    landscape:{destinations:[{...dest,id:'a'},{...dest,id:'b',enabled:false}]},
+    portrait:{destinations:[{...dest,id:'c'}]},
+  });
+  assert.equal(rows.length,3);
+  assert.deepEqual(rows.flatMap(row => ['landscape','portrait'].flatMap(id => row[id] ? [row[id].id] : [])), ['a','b','c']);
+  assert.equal(rows[1].landscape.enabled,false);
+});
+test('unique provider labels pair across programs without treating names as IDs', () => {
+  const dest = {platform:'custom',name:'Rumble'};
+  const rows = destinationRows({landscape:{destinations:[{...dest,id:'h'}]},portrait:{destinations:[{...dest,id:'v'}]}});
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].landscape.id,'h');
+  assert.equal(rows[0].portrait.id,'v');
 });
 test('connection is distinct from observed media delivery', () => {
   const dest = {enabled:true, alive:true, bytes_sent:200};

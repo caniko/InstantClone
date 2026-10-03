@@ -17,7 +17,24 @@ function destinationStatus(program, destination, previous, now) {
   if (previous && program.updated > program.previousUpdated && destination.bytes_sent > previous.bytes_sent) return ['Sending', 'good'];
   return ['Connected · no recent media', 'warn'];
 }
-if (typeof module !== 'undefined') module.exports = {fresh, orientation, destinationStatus};
+function destinationRows(programs) {
+  const groups = new Map(), rows = [];
+  for (const id of PROGRAMS) for (const d of programs[id].destinations) {
+    const key = JSON.stringify([d.platform,d.name]);
+    if (!groups.has(key)) groups.set(key,{name:d.name,platform:d.platform,landscape:[],portrait:[]});
+    groups.get(key)[id].push(d);
+  }
+  for (const group of groups.values()) {
+    if (PROGRAMS.every(id=>group[id].length<=1)) {
+      rows.push({name:group.name,platform:group.platform,landscape:group.landscape[0],portrait:group.portrait[0]});
+    } else {
+      // Ambiguous labels never merge: retain each program's stable ID.
+      for (const id of PROGRAMS) for (const d of group[id]) rows.push({name:`${d.name} · ${d.id}`,platform:d.platform,[id]:d});
+    }
+  }
+  return rows;
+}
+if (typeof module !== 'undefined') module.exports = {fresh, orientation, destinationStatus, destinationRows};
 if (typeof document !== 'undefined') {
   const $ = id => document.getElementById(id);
   const programs = Object.fromEntries(PROGRAMS.map(id => [id, {enabled:false, state:null, updated:0, destinations:[]} ]));
@@ -34,7 +51,7 @@ if (typeof document !== 'undefined') {
     } finally { clearTimeout(timeout); }
   }
   function render() {
-    const now = Date.now(), alerts = [], rows = new Map();
+    const now = Date.now(), alerts = [], rows = destinationRows(programs);
     $('programs').replaceChildren();
     for (const id of PROGRAMS) {
       const p = programs[id], live = fresh(p, now), card = node('section', '', 'program');
@@ -47,14 +64,9 @@ if (typeof document !== 'undefined') {
       if (live && !p.state.ingest_alive) alerts.push(`${label(id)}: no program received. Check this program’s OBS output.`);
       if (live && resolutions.some(res => orientation(res,id) === false)) alerts.push(`${label(id)}: unexpected dimensions (${resolutions.join(', ')}). Check the OBS canvas and output.`);
       if (live && p.state.backpressure) alerts.push(`${label(id)}: relay backpressure. Check upload capacity and delay buffer.`);
-      for (const d of p.destinations) {
-        const key = `${d.platform}:${d.name}`;
-        if (!rows.has(key)) rows.set(key, {name:d.name, platform:d.platform});
-        rows.get(key)[id] = d;
-      }
     }
     $('destinations').replaceChildren();
-    for (const row of rows.values()) {
+    for (const row of rows) {
       const tr = document.createElement('tr'), name = node('th',row.name); name.scope='row';
       name.append(node('small', row.platform === 'custom' ? 'Custom provider' : row.platform)); tr.append(name);
       for (const id of PROGRAMS) {
@@ -67,7 +79,7 @@ if (typeof document !== 'undefined') {
       }
       $('destinations').append(tr);
     }
-    if (!rows.size) { const tr=document.createElement('tr'), td=node('td','No destinations available. Open setup & diagnostics.','muted'); td.colSpan=3; tr.append(td); $('destinations').append(tr); }
+    if (!rows.length) { const tr=document.createElement('tr'), td=node('td','No destinations available. Open setup & diagnostics.','muted'); td.colSpan=3; tr.append(td); $('destinations').append(tr); }
     $('attention').replaceChildren(...alerts.map(text=>node('p',text,'notice')));
     $('summary').textContent = !info ? 'Desk configuration unavailable · retrying' : alerts.length ? `${alerts.length} items need attention` : 'Local relay telemetry current';
     const p=programs[$('scope').value], live=fresh(p,now), phase=p.state?.phase;

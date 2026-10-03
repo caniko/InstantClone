@@ -25,8 +25,11 @@ receipt = {
     'status': 'passed',
 }
 for output in results[0]['outputs'].values():
-    screenshot = Path(output) / 'desk.png'
-    if screenshot.is_file():
-        shutil.copyfile(screenshot, evidence / 'desk.png')
-        receipt['screenshotSha256'] = hashlib.sha256(screenshot.read_bytes()).hexdigest()
+    for name in ['desk.png','real-desk.png']:
+        screenshot = Path(output) / name
+        if screenshot.is_file():
+            shutil.copyfile(screenshot, evidence / name)
+            receipt.setdefault('screenshots',{})[name] = hashlib.sha256(screenshot.read_bytes()).hexdigest()
+            if name == 'desk.png':
+                receipt['screenshotSha256'] = receipt['screenshots'][name]
 (evidence / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')

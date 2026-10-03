@@ -274,7 +274,9 @@ Connection: close
             return Ok(());
         }
         if bare_path.starts_with("/desk/") {
-            let (status, json) = crate::managed::desk_request(method, bare_path, body).await;
+            let desk_settings = settings.borrow().clone();
+            let (status, json) =
+                crate::managed::desk_request(method, bare_path, body, &desk_settings).await;
             write_simple(
                 &mut sock,
                 status,
@@ -4094,6 +4096,9 @@ enum Access {
 }
 
 fn classify_access(method: &str, path: &str) -> Access {
+    if crate::managed_routes::control(method, path) {
+        return Access::Control;
+    }
     if path == "/login" {
         return Access::Public;
     }
@@ -4887,6 +4892,28 @@ mod tests {
     /// delay. `/state` is Control, and Control is arm / activate / cut /
     /// go-live - so pointing overlays at it, or widening it to reach them,
     /// would have turned a picture into a way to cut someone's stream.
+    #[test]
+    fn desk_control_access_is_exact_and_never_admin_mutation() {
+        for (method, path) in [
+            ("GET", "/desk/app.js"),
+            ("GET", "/desk/info"),
+            ("GET", "/desk/landscape/state"),
+            ("GET", "/desk/portrait/destinations"),
+            ("POST", "/desk/portrait/arm"),
+            ("POST", "/desk/landscape/cancel-cut"),
+        ] {
+            assert_eq!(classify_access(method, path), Access::Control);
+        }
+        for (method, path) in [
+            ("POST", "/desk/info"),
+            ("GET", "/desk/landscape/config"),
+            ("POST", "/desk/portrait/destinations"),
+            ("POST", "/desk/landscape/app/restart"),
+        ] {
+            assert_eq!(classify_access(method, path), Access::Admin);
+        }
+    }
+
     #[test]
     fn the_overlay_feed_is_readable_but_not_a_control_path() {
         assert_eq!(classify_access("GET", "/overlay-state"), Access::Public);

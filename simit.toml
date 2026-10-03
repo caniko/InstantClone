@@ -7,6 +7,7 @@ nix_builds = [
   ".#packages.x86_64-linux.instantclone",
   ".#checks.x86_64-linux.runtime",
   ".#checks.x86_64-linux.runtime-dual",
+  ".#checks.x86_64-linux.managed-security",
   ".#checks.x86_64-linux.desk",
 ]
 

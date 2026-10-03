@@ -192,7 +192,7 @@ def run(binary, package_derivation):
                 assert request(web_h, f'/desk/{program}/state')[0] == 200
                 body = request(web_h, f'/desk/{program}/destinations')[1]
                 assert all(k.encode() not in body for k in keys)
-            assert request(web_h, '/desk/portrait/config')[0] == 400
+            assert request(web_h, '/desk/portrait/config')[0] == 403
             for web in [web_h, web_v]:
                 for p in ['/state', '/config', '/destinations', '/logs']:
                     body = request(web, p)[1]

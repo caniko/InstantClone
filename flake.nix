@@ -32,6 +32,17 @@
           python ${./tests/managed/runtime_dual.py} ${pkgs.lib.getExe package} "$packageDerivation"
           touch "$out"
         '';
+      managed-security =
+        pkgs.runCommand "instantclone-managed-security" {
+          nativeBuildInputs = [pkgs.python3 pkgs.ffmpeg-headless pkgs.nodejs pkgs.chromium];
+          FONTCONFIG_FILE = pkgs.makeFontsConf {
+            fontDirectories = [pkgs.dejavu_fonts];
+          };
+        } ''
+          mkdir -p "$out"
+          python ${self}/tests/managed/paths.py ${pkgs.lib.getExe package}
+          python ${self}/tests/managed/auth.py ${pkgs.lib.getExe package} ${pkgs.lib.getExe pkgs.chromium} "$out/real-desk.png"
+        '';
       desk =
         pkgs.runCommand "instantclone-desk" {
           nativeBuildInputs = [pkgs.nodejs pkgs.python3 pkgs.chromium];

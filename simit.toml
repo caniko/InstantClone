@@ -19,5 +19,6 @@ cores = 2
 capture_results = true
 artifact_retention_days = 30
 extra_setup = [
-  "nix run github:caniko/simit/d560f909b450c629b527ee0409f2826c477a5649 -- init ci --platform github --ci-provider actions --runtime nix --check --diff",
+  "nix run --max-jobs 1 --cores 2 github:caniko/simit/d560f909b450c629b527ee0409f2826c477a5649 -- init ci --platform github --ci-provider actions --runtime nix --check --diff",
 ]
+post_build = ["python3 tests/managed/retain.py"]

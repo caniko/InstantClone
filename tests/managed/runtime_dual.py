@@ -17,6 +17,7 @@ per-relay dashboard isolation, and that restarting one relay leaves the other
 forwarding.
 """
 import os
+import re
 import secrets
 import signal
 import socket
@@ -186,14 +187,23 @@ def run(binary, package_derivation):
             children.append(child)
             return child
 
+        def assert_publish_key(tag, expected):
+            # These are disposable test credentials. Check the actual publish
+            # playpath at every receiver, not just rendered settings or media.
+            text = (root / f'sink-{tag}.log').read_text()
+            observed = set(re.findall(r'\[sink\] publish accepted \(stream key: "([^"]*)"\)', text))
+            assert observed == {expected}, f'wrong wire credential mapping at {tag}'
+
         try:
             proc_h = start_proxy(config_h, template_h, logs_h, web_h, 'h')
             proc_v = start_proxy(config_v, template_v, logs_v, web_v, 'v')
             for cfg in [config_h, config_v]:
                 assert cfg.stat().st_mode & 0o777 == 0o600
                 assert cfg.parent.stat().st_mode & 0o777 == 0o700
-            assert f'destination.0.stream_key={keys[0]}' in config_h.read_text()
-            assert f'destination.0.stream_key={keys[4]}' in config_v.read_text()
+            for config, program_keys in [(config_h, keys[:4]), (config_v, keys[4:])]:
+                fields = dict(line.split('=', 1) for line in config.read_text().splitlines() if '=' in line)
+                for index, key in enumerate(program_keys):
+                    assert fields[f'destination.{index}.stream_key'] == key, f'wrong rendered credential mapping at {config.name}/{index}'
             # Dashboards are independent and secret-free.
             assert request(web_h, '/')[0] == 200
             assert request(web_v, '/')[0] == 200
@@ -224,6 +234,9 @@ def run(binary, package_derivation):
             for paths, expected in [(out_h, (160, 90)), (out_v, (90, 160))]:
                 for path in paths:
                     assert dims(path) == expected, f'wrong program dimensions in {path}'
+            for program, program_keys in [('h', keys[:4]), ('v', keys[4:])]:
+                for index, key in enumerate(program_keys):
+                    assert_publish_key(f'{program}-{index}', key)
             assert proc_h.poll() is None and proc_v.poll() is None
 
             # Restart isolation: stopping H must not stall V.
@@ -264,6 +277,8 @@ def run(binary, package_derivation):
                      '-frames:v', '1', '-f', 'null', '-', '-progress', 'pipe:1'],
                     capture_output=True, text=True, timeout=10, check=True)
                 assert 'frame=1\n' in decoded.stdout, f'no fresh post-restart H frame decoded from {path}'
+            for index, key in enumerate(keys[:4]):
+                assert_publish_key(f'h-restart-{index}', key)
 
             # No cross-talk: portrait file never became landscape and vice versa.
             for path in out_v:

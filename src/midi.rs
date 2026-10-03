@@ -287,14 +287,14 @@ fn should_hold_devices(learning: bool, midi: &crate::config::MidiBindings) -> bo
 
 #[cfg(windows)]
 mod win {
-    use super::{signature_for, MidiState};
+    use super::{MidiState, signature_for};
     use crate::config::Settings;
     use crate::controller::Controller;
     use std::sync::Arc;
     use tokio::sync::watch;
     use windows_sys::Win32::Media::Audio::{
-        midiInClose, midiInGetDevCapsW, midiInGetNumDevs, midiInOpen, midiInReset, midiInStart,
-        midiInStop, CALLBACK_FUNCTION, HMIDIIN, MIDIINCAPSW,
+        CALLBACK_FUNCTION, HMIDIIN, MIDIINCAPSW, midiInClose, midiInGetDevCapsW, midiInGetNumDevs,
+        midiInOpen, midiInReset, midiInStart, midiInStop,
     };
 
     // Stable winmm constants that windows-sys does not re-export.

@@ -14,9 +14,9 @@ use crate::h264::{AudioCodec, VideoCodec};
 use crate::rtmp::client::{EgressClient, EgressSink, EgressUrl};
 use std::collections::HashMap;
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 
@@ -2811,8 +2811,16 @@ async fn apply_cut(
             "CUT",
             &format!(
                 "dest={} dir={} seq={}→{} in_ts={}→{} delta_ms={} out_ts_base=0x{:08x}→0x{:08x} gen={}",
-                dest.id, direction, prev_seq, new_seq, prev_ts, new_ts, delta_ms,
-                state.output_ts_base, new_output_ts_base, gen,
+                dest.id,
+                direction,
+                prev_seq,
+                new_seq,
+                prev_ts,
+                new_ts,
+                delta_ms,
+                state.output_ts_base,
+                new_output_ts_base,
+                gen,
             ),
         );
     }

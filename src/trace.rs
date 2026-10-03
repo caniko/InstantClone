@@ -26,8 +26,8 @@ use crate::sync::Mutex;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Hard cap on how much trace we'll write before auto-disabling. The

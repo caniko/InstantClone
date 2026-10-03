@@ -27,15 +27,13 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
 };
 #[cfg(windows)]
-use windows_sys::Win32::Networking::WinSock::{ntohs, AF_INET};
+use windows_sys::Win32::Networking::WinSock::{AF_INET, ntohs};
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 #[cfg(windows)]
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDYES, MB_ICONWARNING, MB_OK, MB_YESNO,
-};
+use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONWARNING, MB_OK, MB_YESNO, MessageBoxW};
 
 /// Header struct of the variable-length table returned by
 /// `GetExtendedTcpTable(TCP_TABLE_OWNER_PID_LISTENER)`. We never

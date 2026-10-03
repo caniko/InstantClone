@@ -10,6 +10,11 @@ decrypted credentials using `destination.N.stream_key_file` and optionally
 `destination.N.custom_egress_url_file`. Plaintext is read only at process startup.
 Configuration and application lifecycle changes belong to the service manager.
 
+Server URLs may have multi-segment application paths; managed mode always appends
+the separate stream key. Do not embed the key in the server URL. Kick also accepts
+a host-only `rtmps://host[:port]` server and adds `/app`. Userinfo, query strings,
+fragments, traversal and empty path segments are rejected without echoing values.
+
 Set `XDG_RUNTIME_DIR` to an existing user-owned private directory. `CONFIG_PATH`
 must be in a dedicated subdirectory of it. Managed templates must explicitly
 set absolute `buffer_path` and `overlays_dir` paths. Traversal and symlinks in
@@ -63,6 +68,10 @@ opens setup and diagnostics. The desk shows both programs and every destination,
 marks unavailable telemetry unknown, and scopes delay actions to one program.
 Connected transport is distinct from measured media delivery; neither proves a
 provider has published the broadcast. Returning to real time does not stop OBS.
+Setup reads `ingest_key_set` from fresh telemetry. Protected ingests instruct OBS
+to use that program's provisioned key without displaying it; unprotected ingests
+accept any non-empty key. Credential errors are shown separately from outages,
+and stale or unauthenticated program controls remain paused.
 
 The same-origin bridge only contacts fixed loopback ports and exposes state,
 destination summaries and supported delay actions. Credentials and endpoint URLs

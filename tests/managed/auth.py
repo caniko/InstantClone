@@ -23,6 +23,7 @@ def run(binary, chromium=None, screenshot=None):
         runtime.mkdir(mode=0o700)
         web_h, web_v, ingest_h, ingest_v = [port() for _ in range(4)]
         tokens = [secrets.token_hex(32), secrets.token_hex(32)]
+        ingest_keys = [secrets.token_hex(20), secrets.token_hex(20)]
         token_files = [root / 'h.token', root / 'v.token']
         for file, token in zip(token_files, tokens):
             file.write_text(token)
@@ -56,6 +57,7 @@ def run(binary, chromium=None, screenshot=None):
                 template.write_text('\n'.join([
                     'configured=true', f'web_port={web}', 'web_bind_all=false',
                     f'ingest_port={ingest}', 'ingest_bind_all=false', 'buffer_mb=50',
+                    f'ingest_key={ingest_keys[index]}',
                     f'buffer_path={root}/cache-{index}/stream.buf',
                     f'overlays_dir={root}/state-{index}/overlays',
                     'tracing_enabled=false', 'update_check_enabled=false',
@@ -116,11 +118,11 @@ def run(binary, chromium=None, screenshot=None):
             token_files[1].write_text(tokens[1])
             token_files[1].chmod(0o600)
 
-            for ingest, size in [(ingest_h,'160x90'),(ingest_v,'90x160')]:
+            for ingest, size, key in [(ingest_h,'160x90',ingest_keys[0]),(ingest_v,'90x160',ingest_keys[1])]:
                 publisher = subprocess.Popen([
                     'ffmpeg','-nostdin','-v','error','-re','-f','lavfi','-i',f'testsrc2=size={size}:rate=10',
                     '-t','60','-c:v','libx264','-preset','ultrafast','-tune','zerolatency','-g','10',
-                    '-f','flv',f'rtmp://127.0.0.1:{ingest}/live/local',
+                    '-f','flv',f'rtmp://127.0.0.1:{ingest}/live/{key}',
                 ],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                 children.append(publisher)
             def state(program):
@@ -133,7 +135,7 @@ def run(binary, chromium=None, screenshot=None):
             assert state('landscape')['armed_delay_ms'] == 0, 'portrait action changed landscape'
             assert request(web_h,'/desk/portrait/disarm',body='',cookie=cookie)[0] == 200
             if chromium:
-                browser_check(chromium,root,f'http://127.0.0.1:{web_h}',tokens[0],screenshot)
+                browser_check(chromium,root,f'http://127.0.0.1:{web_h}',tokens[0],screenshot,token_files[1],tokens[1])
             for file in root.glob('relay-*.log'):
                 assert all(token not in file.read_text() for token in tokens), 'control token leaked into logs'
             print('PASS: managed login, dock tokens, protected peer bridge, revoked sessions and action isolation')
@@ -142,7 +144,7 @@ def run(binary, chromium=None, screenshot=None):
                 stop(child)
 
 
-def browser_check(chromium, root, base, token, screenshot):
+def browser_check(chromium, root, base, token, screenshot, peer_file, peer_token):
     profile = root / 'browser-profile'
     env = os.environ.copy()
     for name in ['HOME','XDG_CONFIG_HOME','XDG_CACHE_HOME']:
@@ -160,7 +162,7 @@ def browser_check(chromium, root, base, token, screenshot):
         assert browser.poll() is None, 'headless browser exited'
         debug_port, path = active.read_text().splitlines()[:2]
         result = subprocess.run(['node',str(Path(__file__).with_name('live.cjs')),
-                                 f'ws://127.0.0.1:{debug_port}{path}',base,token,screenshot or ''],
+                                 f'ws://127.0.0.1:{debug_port}{path}',base,token,screenshot or '',str(peer_file),peer_token],
                                 capture_output=True,text=True,timeout=45)
         assert result.returncode == 0, result.stderr[-2000:]
         print(result.stdout.strip())

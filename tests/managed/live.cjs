@@ -1,7 +1,7 @@
 // Real Chromium + real relay HTTP. No fetch stubs or credential reads from JS.
 const assert = require('node:assert/strict');
 const {writeFileSync}=require('node:fs');
-const [endpoint,base,token,screenshot] = process.argv.slice(2);
+const [endpoint,base,token,screenshot,peerFile,peerToken] = process.argv.slice(2);
 const socket = new WebSocket(endpoint);
 let sequence=0, sessionId;
 const pending=new Map();
@@ -60,6 +60,13 @@ async function run() {
   assert.ok(responses.some(r=>r.path==='/desk/portrait/arm' && r.status===200));
   assert.ok(responses.every(r=>r.status===200),'Dock loaded a failed desk response');
   assert.deepEqual(exceptions,[],'Unhandled browser exceptions');
+  assert.match(await evaluate("document.getElementById('setup').textContent"),/provisioned ingest key/);
+  assert.equal(await evaluate("fetch('/desk/portrait/state').then(r=>r.json()).then(s=>s.ingest_key_set)"),true);
+  writeFileSync(peerFile,'0'.repeat(peerToken.length),{mode:0o600});
+  await until("document.getElementById('attention').textContent.includes('authentication required') && [...document.querySelectorAll('#programs .status')].some(e=>e.textContent==='Authentication required')");
+  assert.equal(await evaluate("document.querySelector('[data-action=arm]').disabled"),true);
+  writeFileSync(peerFile,peerToken,{mode:0o600});
+  await until("[...document.querySelectorAll('#programs .status')].every(e=>e.textContent==='Receiving')");
   if (screenshot) {
     const {data}=await command('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});
     writeFileSync(screenshot,Buffer.from(data,'base64'));

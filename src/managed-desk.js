@@ -7,9 +7,20 @@ function orientation(res, id) {
   const match = /^(\d+)x(\d+)$/.exec(res || '');
   return match ? (id === 'portrait' ? +match[2] > +match[1] : +match[1] > +match[2]) : null;
 }
+function authError(program) { return /authenticat|credential/i.test(program.error || ''); }
+function programStatus(program, now) {
+  if (!program.enabled) return 'Not configured';
+  if (authError(program)) return 'Authentication required';
+  if (!fresh(program,now)) return 'Offline';
+  return program.state.ingest_alive ? 'Receiving' : 'No program';
+}
+function ingestInstructions(state) {
+  if (!state || typeof state.ingest_key_set !== 'boolean') return 'ingest authentication unknown; refresh telemetry before configuring OBS';
+  return state.ingest_key_set ? 'use this program’s provisioned ingest key (not displayed)' : 'local stream key: any non-empty value (ingest authentication is disabled)';
+}
 function destinationStatus(program, destination, previous, now) {
   if (!program.enabled) return ['Not configured', 'muted'];
-  if (!fresh(program, now)) return ['Unknown · relay offline', 'bad'];
+  if (!fresh(program, now)) return [authError(program) ? 'Unknown · authentication required' : 'Unknown · relay offline', 'bad'];
   if (!destination) return ['Not configured', 'muted'];
   if (!destination.enabled) return ['Disabled', 'muted'];
   if (!program.state.ingest_alive) return ['Waiting for program', 'warn'];
@@ -34,7 +45,7 @@ function destinationRows(programs) {
   }
   return rows;
 }
-if (typeof module !== 'undefined') module.exports = {fresh, orientation, destinationStatus, destinationRows};
+if (typeof module !== 'undefined') module.exports = {fresh, orientation, destinationStatus, destinationRows, programStatus, ingestInstructions};
 if (typeof document !== 'undefined') {
   const $ = id => document.getElementById(id);
   const programs = Object.fromEntries(PROGRAMS.map(id => [id, {enabled:false, state:null, updated:0, destinations:[]} ]));
@@ -56,11 +67,11 @@ if (typeof document !== 'undefined') {
     for (const id of PROGRAMS) {
       const p = programs[id], live = fresh(p, now), card = node('section', '', 'program');
       const head = node('div', '', 'program-head'); head.append(node('h3',label(id)));
-      head.append(node('span', !info ? 'Unknown' : !p.enabled ? 'Not configured' : !live ? 'Offline' : p.state.ingest_alive ? 'Receiving' : 'No program', live && p.state.ingest_alive ? 'status good' : 'status warn')); card.append(head);
+      head.append(node('span', !info ? 'Unknown' : programStatus(p,now), live && p.state.ingest_alive ? 'status good' : 'status warn')); card.append(head);
       const resolutions = [...new Set((p.state?.destinations || []).map(d => d.video_res).filter(Boolean))];
       card.append(node('p', live ? `${resolutions.join(' · ') || 'Dimensions unknown'} · ${((p.state.stats?.bitrate_kbps || 0)/1000).toFixed(1)} Mb/s` : p.updated ? `Last response ${Math.floor((now-p.updated)/1000)} seconds ago` : 'No telemetry', 'muted'));
       $('programs').append(card);
-      if (info && p.enabled && !live) alerts.push(`${label(id)}: relay unavailable. Inspect its user service; last state is not current.`);
+      if (info && p.enabled && !live) alerts.push(`${label(id)}: ${p.error || 'Telemetry expired; refresh or inspect its user service.'} Last state is not current.`);
       if (live && !p.state.ingest_alive) alerts.push(`${label(id)}: no program received. Check this program’s OBS output.`);
       if (live && resolutions.some(res => orientation(res,id) === false)) alerts.push(`${label(id)}: unexpected dimensions (${resolutions.join(', ')}). Check the OBS canvas and output.`);
       if (live && p.state.backpressure) alerts.push(`${label(id)}: relay backpressure. Check upload capacity and delay buffer.`);
@@ -82,6 +93,7 @@ if (typeof document !== 'undefined') {
     if (!rows.length) { const tr=document.createElement('tr'), td=node('td','No destinations available. Open setup & diagnostics.','muted'); td.colSpan=3; tr.append(td); $('destinations').append(tr); }
     $('attention').replaceChildren(...alerts.map(text=>node('p',text,'notice')));
     $('summary').textContent = !info ? 'Desk configuration unavailable · retrying' : alerts.length ? `${alerts.length} items need attention` : 'Local relay telemetry current';
+    if (info) $('setup').replaceChildren(...PROGRAMS.map(id=>node('p',`${label(id)}: ${programs[id].enabled ? `OBS custom output rtmp://127.0.0.1:${info[id].ingestPort}/live · ${ingestInstructions(fresh(programs[id],now) ? programs[id].state : null)}` : 'relay not enabled'}`)));
     const p=programs[$('scope').value], live=fresh(p,now), phase=p.state?.phase;
     $('delay').textContent=live ? `${label($('scope').value)} · ${(p.state.current_delay_ms/1000).toFixed(1)} s behind real time · ${phase}` : 'Current state unavailable · controls paused';
     if (live && p.state.safe_cut_pending) $('delay').textContent+=` · returning to real time in approximately ${Math.ceil(p.state.safe_cut_remaining_ms/1000)} s`;
@@ -97,10 +109,8 @@ if (typeof document !== 'undefined') {
     try {
       if (!info) {
         info=await request('/desk/info');
-        $('setup').replaceChildren();
         for (const id of PROGRAMS) {
           programs[id].enabled=info[id].enabled;
-          $('setup').append(node('p',`${label(id)}: ${info[id].enabled ? `OBS custom output rtmp://127.0.0.1:${info[id].ingestPort}/live · local stream key: desk` : 'relay not enabled'}`));
         }
       }
       await Promise.all(PROGRAMS.filter(id=>programs[id].enabled).map(async id=>{

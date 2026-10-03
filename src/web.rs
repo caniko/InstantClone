@@ -1360,7 +1360,7 @@ fn state_json(
         crate::h264::detect_vertical_primary_track(&ctrl.ring.video_seq_headers.lock()).is_some();
 
     format!(
-        r#"{{"phase":"{ph}","armed_delay_ms":{ad},"target_delay_ms":{td},"current_delay_ms":{cd},"buffer_fill_ms":{bf},"buffer_target_ms":{btm},"buffer_capacity_ms_est":{bc},"ingest_alive":{ia},"egress_alive":{ea},"destinations_alive":{dla},"destinations_total":{dlt},"buffer_building":{bb},"configured":{cfg},"obs_url":"{ou}","webhook_set":{ws},"video_codec":"{vc}","audio_codec":"{ac}","multitrack_video":{mtv},"multitrack_audio":{mta},"vertical_present":{vp},"cpu_pct":{cp:.2},"rss_bytes":{rb},"uptime_secs":{up},"publisher_token":{pt},"consumer_lag":{cl},"backpressure":{bp},"safe_cut_pending":{scp},"safe_cut_remaining_ms":{scr},"compat_warning":{cw},"hotkey_conflicts":[{hkc}],"last_action":{la},"stats":{{"tags_sent":{ts},"bytes_sent":{bs},"cuts":{cu},"ingest_disconnects":{id},"egress_reconnects":{er},"bitrate_kbps":{br}}},"destinations":[{dl}]}}"#,
+        r#"{{"phase":"{ph}","armed_delay_ms":{ad},"target_delay_ms":{td},"current_delay_ms":{cd},"buffer_fill_ms":{bf},"buffer_target_ms":{btm},"buffer_capacity_ms_est":{bc},"ingest_alive":{ia},"ingest_key_set":{iks},"egress_alive":{ea},"destinations_alive":{dla},"destinations_total":{dlt},"buffer_building":{bb},"configured":{cfg},"obs_url":"{ou}","webhook_set":{ws},"video_codec":"{vc}","audio_codec":"{ac}","multitrack_video":{mtv},"multitrack_audio":{mta},"vertical_present":{vp},"cpu_pct":{cp:.2},"rss_bytes":{rb},"uptime_secs":{up},"publisher_token":{pt},"consumer_lag":{cl},"backpressure":{bp},"safe_cut_pending":{scp},"safe_cut_remaining_ms":{scr},"compat_warning":{cw},"hotkey_conflicts":[{hkc}],"last_action":{la},"stats":{{"tags_sent":{ts},"bytes_sent":{bs},"cuts":{cu},"ingest_disconnects":{id},"egress_reconnects":{er},"bitrate_kbps":{br}}},"destinations":[{dl}]}}"#,
         ph = ctrl.phase(),
         scp = ctrl.safe_cut_pending(),
         scr = ctrl.safe_cut_remaining_ms(),
@@ -1394,6 +1394,7 @@ fn state_json(
         btm = ctrl.target_buffer_ms(),
         bc = max_buffer_ms,
         ia = ctrl.ingest_alive(),
+        iks = !s.ingest_key.is_empty(),
         ea = ctrl.egress_alive(),
         dla = alive_count,
         dlt = total_count,

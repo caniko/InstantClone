@@ -106,8 +106,9 @@ fn secret(path: &Path, name: &str) -> io::Result<String> {
 }
 
 /// Secret server URLs use the same shape as open `server` values, without
-/// credentials, query strings or an embedded stream key. Never echo the value.
-fn server_url(path: &Path, name: &str) -> io::Result<String> {
+/// credentials or query strings. Managed destinations always append the separate
+/// stream key, even when their server has a multi-segment app path.
+fn server_url(path: &Path, name: &str, platform: &str) -> io::Result<String> {
     let error = |reason| invalid(&format!("InstantClone destination '{name}': {reason}"));
     let mut bytes = Vec::new();
     fs::File::open(path)
@@ -120,20 +121,22 @@ fn server_url(path: &Path, name: &str) -> io::Result<String> {
     }
     if bytes.is_empty() || bytes.len() > 4096 {
         return Err(error(
-            "server-URL secret must be rtmp(s)://host[:port]/app without credentials, query or stream key",
+            "server-URL secret must be rtmp(s)://host[:port]/app without credentials or query",
         ));
     }
     let text = std::str::from_utf8(&bytes).map_err(|_| {
-        error("server-URL secret must be rtmp(s)://host[:port]/app without credentials, query or stream key")
+        error("server-URL secret must be rtmp(s)://host[:port]/app without credentials or query")
     })?;
     let rest = text
         .strip_prefix("rtmp://")
         .or_else(|| text.strip_prefix("rtmps://"))
         .ok_or_else(|| {
-            error("server-URL secret must be rtmp(s)://host[:port]/app without credentials, query or stream key")
+            error(
+                "server-URL secret must be rtmp(s)://host[:port]/app without credentials or query",
+            )
         })?;
     let valid = (|| {
-        let (authority, app) = rest.split_once('/')?;
+        let (authority, app) = rest.split_once('/').unwrap_or((rest, ""));
         if authority.is_empty() || authority.bytes().any(|b| b == b'@') {
             return None;
         }
@@ -156,20 +159,23 @@ fn server_url(path: &Path, name: &str) -> io::Result<String> {
             return None;
         }
         let app = app.strip_suffix('/').unwrap_or(app);
-        if app.is_empty()
-            || app.contains('/')
-            || !app
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        if (app.is_empty() && platform != "kick")
+            || (!app.is_empty()
+                && !app.split('/').all(|segment| {
+                    !segment.is_empty()
+                        && segment
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+                        && !matches!(segment, "." | "..")
+                }))
         {
             return None;
         }
-        // ponytail: single-app-segment check only; full URL semantics belong to upstream.
         Some(())
     })();
     if valid.is_none() || !text.bytes().all(|b| b.is_ascii_graphic()) {
         return Err(error(
-            "server-URL secret must be rtmp(s)://host[:port]/app without credentials, query or stream key",
+            "server-URL secret must be rtmp(s)://host[:port]/app without credentials or query",
         ));
     }
     Ok(text.to_owned())
@@ -208,10 +214,9 @@ pub fn prepare() -> io::Result<()> {
                 .map(|(key, value)| (key.trim(), value.trim()))
         })
         .collect();
-    let mut directories = vec![
-        path.parent()
-            .ok_or_else(|| invalid("InstantClone: invalid CONFIG_PATH"))?,
-    ];
+    let mut directories = vec![path
+        .parent()
+        .ok_or_else(|| invalid("InstantClone: invalid CONFIG_PATH"))?];
     for key in ["buffer_path", "overlays_dir"] {
         let value = fields.get(key).ok_or_else(|| {
             invalid("InstantClone: managed templates require explicit buffer_path and overlays_dir")
@@ -304,7 +309,14 @@ pub fn prepare() -> io::Result<()> {
                     .unwrap_or_else(|| value.into());
                 rendered.push_str(&format!(
                     "{prefix}.custom_egress_url={}\n",
-                    server_url(&secret_path, name)?
+                    server_url(
+                        &secret_path,
+                        name,
+                        fields
+                            .get(format!("{prefix}.platform").as_str())
+                            .copied()
+                            .unwrap_or("custom")
+                    )?
                 ));
                 continue;
             }
@@ -600,17 +612,18 @@ mod tests {
             "rtmp://127.0.0.1:1935/live2",
             "rtmp://host/live\n",
             "rtmps://host/app\r\n",
+            "rtmp://host/group/app",
         ] {
             fs::write(&path, text).unwrap();
             assert_eq!(
-                server_url(&path, "test").unwrap(),
+                server_url(&path, "test", "custom").unwrap(),
                 text.trim_end_matches(['\r', '\n'])
             );
         }
         for bytes in [
             b"".as_slice(),
             b"\n",
-            b"rtmp://host/live/key",
+            b"rtmp://host/live//key",
             b"rtmp://u:secret@host/live",
             b"rtmp://host/live?key=secret",
             b"rtmp://host:65536/live",
@@ -622,13 +635,16 @@ mod tests {
             b"rtmp://host/",
         ] {
             fs::write(&path, bytes).unwrap();
-            let err = server_url(&path, "test").unwrap_err().to_string();
+            let err = server_url(&path, "test", "custom").unwrap_err().to_string();
             assert!(err.starts_with("InstantClone destination 'test':"));
-            assert!(
-                !String::from_utf8_lossy(bytes)
-                    .split_whitespace()
-                    .any(|word| word.len() > 4 && err.contains(word))
-            );
+            assert!(!String::from_utf8_lossy(bytes)
+                .split_whitespace()
+                .any(|word| word.len() > 4 && err.contains(word)));
+        }
+        for text in ["rtmps://host", "rtmps://host/", "rtmps://host:443"] {
+            fs::write(&path, text).unwrap();
+            assert_eq!(server_url(&path, "test", "kick").unwrap(), text);
+            assert!(server_url(&path, "test", "custom").is_err());
         }
         fs::remove_dir_all(dir).unwrap();
     }

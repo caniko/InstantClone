@@ -617,6 +617,10 @@ impl Destination {
     /// rules as the top-level single-dest path: if a custom URL already has
     /// app+key, the key field is ignored; otherwise the key is appended.
     pub fn egress_url(&self) -> Option<String> {
+        self.egress_url_for_mode(crate::managed::enabled())
+    }
+
+    fn egress_url_for_mode(&self, managed: bool) -> Option<String> {
         // Local test sink: fully self-contained. The URL is fixed (the
         // supervisor spawns the matching `instantclone sink` child on
         // SINK_RTMP_PORT) and the stream key is ignored - the sink
@@ -647,7 +651,7 @@ impl Destination {
                 .map(|x| x.1)
                 .unwrap_or("");
             let segs = path.split('/').filter(|s| !s.is_empty()).count();
-            if segs >= 2 || self.stream_key.is_empty() {
+            if (segs >= 2 && !managed) || self.stream_key.is_empty() {
                 return Some(base);
             }
             return Some(format!("{}/{}", base, self.stream_key));
@@ -2361,6 +2365,38 @@ mod tests {
         assert!(url.starts_with("rtmps://"), "kick must use rtmps: {url}");
         assert!(url.ends_with("/app/sk_test_key"));
         assert!(d.is_well_formed());
+    }
+
+    #[test]
+    fn managed_multi_segment_server_appends_the_separate_key() {
+        let d = Destination {
+            id: "custom".into(),
+            name: "Custom".into(),
+            enabled: true,
+            platform: "custom".into(),
+            stream_key: "separate-key".into(),
+            custom_egress_url: "rtmp://host/group/app".into(),
+            twitch_ingest: String::new(),
+            youtube_ingest: String::new(),
+            vod_audio: false,
+            vod_audio_inject_eb: false,
+            stream_format: "horizontal".into(),
+            audio_track: "main".into(),
+        };
+        let resolved = d.egress_url_for_mode(true).unwrap();
+        let parsed = crate::rtmp::client::EgressUrl::parse(&resolved).unwrap();
+        assert_eq!(parsed.app, "group/app");
+        assert_eq!(parsed.stream_key, "separate-key");
+        assert_eq!(d.egress_url_for_mode(false).unwrap(), d.custom_egress_url);
+        let kick = Destination {
+            platform: "kick".into(),
+            custom_egress_url: "rtmps://host".into(),
+            ..d
+        };
+        assert_eq!(
+            kick.egress_url_for_mode(true).unwrap(),
+            "rtmps://host/app/separate-key"
+        );
     }
 
     #[test]

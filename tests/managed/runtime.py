@@ -195,7 +195,7 @@ def run(binary, store_template, package_derivation):
                 assert result.returncode != 0 and b'missing or unreadable' in result.stderr
                 path.write_text(rotated)
             # Secret server URLs fail closed without echoing their bytes.
-            for payload in [b'', b'\n', b'bad\nkey', b'rtmp://127.0.0.1/live/key', b'https://127.0.0.1/live']:
+            for payload in [b'', b'\n', b'bad\nkey', b'rtmp://127.0.0.1/live?key=secret', b'https://127.0.0.1/live']:
                 server_path.write_bytes(payload)
                 result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime, capture_output=True, timeout=10, check=False)
                 assert result.returncode != 0

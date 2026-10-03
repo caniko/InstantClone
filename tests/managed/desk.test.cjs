@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {fresh, orientation, destinationStatus, destinationRows} = require(process.env.DESK_JS || '../../src/managed-desk.js');
+const {fresh, orientation, destinationStatus, destinationRows, programStatus, ingestInstructions} = require(process.env.DESK_JS || '../../src/managed-desk.js');
 const now = 10000;
 const program = {enabled:true, updated:now, previousUpdated:9000, state:{ingest_alive:true}};
 test('offline or stale telemetry never claims sending', () => {
@@ -40,4 +40,15 @@ test('dimensions identify portrait independently of primary-track routing', () =
   assert.equal(orientation('1920x1080','portrait'),false);
   assert.equal(orientation('1920x1080','landscape'),true);
   assert.equal(orientation('','portrait'),null);
+});
+test('credential errors remain visible and distinct from offline telemetry', () => {
+  const p = {...program,error:'Program authentication required; check its control credential.'};
+  assert.equal(programStatus(p,now),'Authentication required');
+  assert.equal(destinationStatus(p,{enabled:true},null,now)[0],'Unknown · authentication required');
+  assert.equal(programStatus({...program,error:'Relay unavailable; check its user service.'},now),'Offline');
+});
+test('setup never invents a provisioned ingest key', () => {
+  assert.match(ingestInstructions({ingest_key_set:true}),/provisioned ingest key/);
+  assert.match(ingestInstructions({ingest_key_set:false}),/any non-empty/);
+  assert.match(ingestInstructions(null),/unknown/);
 });

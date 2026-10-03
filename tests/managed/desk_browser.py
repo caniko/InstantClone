@@ -3,10 +3,12 @@
 Usage: python desk_browser.py CHROMIUM [SCREENSHOT_PATH]
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from html import unescape
 
 root = Path(__file__).resolve().parents[2]
 assets = root / 'src'
@@ -50,7 +52,7 @@ setTimeout(async()=>{
     document.querySelector('#scope').value='portrait';
     document.querySelector('#scope').dispatchEvent(new Event('change'));
     assert([...document.querySelectorAll('[data-action]')].every(button=>button.disabled),'Offline controls enabled');
-    assert(document.querySelector('#attention').textContent.includes('Portrait: relay unavailable'),'Offline state hidden');
+    assert(document.querySelector('#attention').textContent.includes('Portrait: Relay unavailable'),'Offline state hidden');
     assert(!document.documentElement.dataset.error,'Browser exception');
     document.documentElement.dataset.test='PASS';
   } catch(error) {document.documentElement.dataset.test=error.message;}
@@ -80,5 +82,7 @@ with tempfile.TemporaryDirectory(prefix='desk-browser-') as tmp:
     result = subprocess.run(command + [page.as_uri()], env=environment,
                             capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr[-2000:]
-    assert 'data-test="PASS"' in result.stdout, result.stdout[-4000:]
+    outcome = re.search(r'data-test="([^"]*)"', result.stdout)
+    message = unescape(outcome[1]) if outcome else 'Browser checks did not finish'
+    assert message == 'PASS', message + '\n' + result.stdout[:2000]
     print('PASS: Chromium dual-program rendering, rejected actions, scope isolation and offline controls')

@@ -12,7 +12,8 @@ Configuration and application lifecycle changes belong to the service manager.
 
 Server URLs may have multi-segment application paths; managed mode always appends
 the separate stream key. Enabled destinations without that key fail at startup
-before creating managed state; disabled destination metadata needs no credential.
+before creating managed state; disabled managed destination metadata needs no credential.
+Standalone keeps its existing validation because its dock can enable destinations.
 Do not embed the key in the server URL. Kick also accepts
 a host-only `rtmps://host[:port]` server and adds `/app`. Userinfo, query strings,
 fragments, traversal and empty path segments are rejected without echoing values.

@@ -1554,7 +1554,9 @@ impl Settings {
                 errs.push("destination is missing a name".into());
                 continue;
             }
-            if !d.enabled {
+            // Managed templates retain disabled metadata without credentials.
+            // Standalone still validates drafts because its dock can enable them.
+            if !d.enabled && crate::managed::enabled() {
                 continue;
             }
             if d.platform == "custom" || d.platform == "kick" {
@@ -2419,12 +2421,12 @@ mod tests {
     }
 
     #[test]
-    fn disabled_destinations_do_not_require_credentials_or_a_server() {
+    fn standalone_disabled_invalid_destinations_still_fail_validation() {
         let mut settings = Settings::from_text(
             "destination.0.name=Disabled\ndestination.0.enabled=false\ndestination.0.platform=custom\n",
         );
         assert_eq!(settings.destinations.len(), 1);
-        assert!(settings.validate().is_empty());
+        assert!(!settings.validate().is_empty());
         settings.destinations[0].enabled = true;
         assert!(!settings.validate().is_empty());
     }

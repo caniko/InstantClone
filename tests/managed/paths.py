@@ -3,7 +3,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import http.client
+import json
 from pathlib import Path
+from runtime_dual import port, stop, wait
 
 
 def run(binary):
@@ -64,6 +67,30 @@ def run(binary):
         for untouched in ['runtime/instance','cache','overlays']:
             assert not (root / untouched).exists(), f'missing-key validation mutated {untouched}'
         print('PASS: managed multi-segment server cannot be mistaken for an embedded key')
+        web, ingest = port(), port()
+        template.write_text(template.read_text().replace('destination.0.enabled=true','destination.0.enabled=false')
+                            + f'web_port={web}\ningest_port={ingest}\nbuffer_mb=50\n'
+                            + 'update_check_enabled=false\nopen_dashboard_on_launch=false\n')
+        with (root / 'disabled.log').open('wb') as log:
+            proc = subprocess.Popen([binary,'--no-browser'],env=env,cwd=root,stdout=log,stderr=log)
+        try:
+            def state():
+                connection = http.client.HTTPConnection('127.0.0.1',web,timeout=2)
+                try:
+                    connection.request('GET','/state')
+                    response = connection.getresponse()
+                    assert response.status == 200
+                    return json.loads(response.read())
+                finally:
+                    connection.close()
+            wait(lambda: state().get('destinations'))
+            destinations = state()['destinations']
+            assert len(destinations) == 1 and destinations[0]['enabled'] is False
+            assert destinations[0]['alive'] is False
+            assert proc.poll() is None
+        finally:
+            stop(proc)
+        print('PASS: disabled managed metadata starts without keys or an egress connection')
 
 
 if __name__ == '__main__':

@@ -35,6 +35,9 @@
       desk =
         pkgs.runCommand "instantclone-desk" {
           nativeBuildInputs = [pkgs.nodejs pkgs.python3 pkgs.chromium];
+          FONTCONFIG_FILE = pkgs.makeFontsConf {
+            fontDirectories = [pkgs.dejavu_fonts];
+          };
         } ''
           mkdir -p "$out"
           DESK_JS=${./src/managed-desk.js} node --test ${./tests/managed/desk.test.cjs}

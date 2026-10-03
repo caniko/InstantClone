@@ -636,6 +636,9 @@ impl Destination {
         // host for everyone - the streamer pastes their own. Kick's URL is
         // rtmps://, which the egress socket upgrades to TLS transparently.
         if self.platform == "custom" || self.platform == "kick" {
+            if managed && self.stream_key.is_empty() {
+                return None;
+            }
             let mut base = non_empty(&self.custom_egress_url)?
                 .trim_end_matches('/')
                 .to_string();
@@ -786,12 +789,16 @@ impl Settings {
     }
 
     pub fn load(path: &Path) -> io::Result<Self> {
+        Ok(Self::from_text(&fs::read_to_string(path)?))
+    }
+
+    /// Parse the same file format before managed startup persists it.
+    pub(crate) fn from_text(text: &str) -> Self {
         let mut s = Self::defaults();
         // Both lists are file-authoritative - a user who deletes them all
         // must see them stay deleted across restarts.
         s.profiles.clear();
         s.destinations.clear();
-        let text = fs::read_to_string(path)?;
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -832,7 +839,7 @@ impl Settings {
         // hit divide-by-zero (buffer_mb=0 → `% capacity` in DiskRing) or
         // bind two services to the same port (one will silently fail).
         s.sanitize_load();
-        Ok(s)
+        s
     }
 
     /// Apply on-load clamps that protect against hand-edited / malformed
@@ -1545,6 +1552,9 @@ impl Settings {
         for d in &self.destinations {
             if d.name.trim().is_empty() {
                 errs.push("destination is missing a name".into());
+                continue;
+            }
+            if !d.enabled {
                 continue;
             }
             if d.platform == "custom" || d.platform == "kick" {
@@ -2388,6 +2398,15 @@ mod tests {
         assert_eq!(parsed.app, "group/app");
         assert_eq!(parsed.stream_key, "separate-key");
         assert_eq!(d.egress_url_for_mode(false).unwrap(), d.custom_egress_url);
+        let missing_key = Destination {
+            stream_key: String::new(),
+            ..d.clone()
+        };
+        assert!(missing_key.egress_url_for_mode(true).is_none());
+        assert_eq!(
+            missing_key.egress_url_for_mode(false).unwrap(),
+            d.custom_egress_url
+        );
         let kick = Destination {
             platform: "kick".into(),
             custom_egress_url: "rtmps://host".into(),
@@ -2397,6 +2416,17 @@ mod tests {
             kick.egress_url_for_mode(true).unwrap(),
             "rtmps://host/app/separate-key"
         );
+    }
+
+    #[test]
+    fn disabled_destinations_do_not_require_credentials_or_a_server() {
+        let mut settings = Settings::from_text(
+            "destination.0.name=Disabled\ndestination.0.enabled=false\ndestination.0.platform=custom\n",
+        );
+        assert_eq!(settings.destinations.len(), 1);
+        assert!(settings.validate().is_empty());
+        settings.destinations[0].enabled = true;
+        assert!(!settings.validate().is_empty());
     }
 
     #[test]

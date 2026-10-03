@@ -11,7 +11,9 @@ decrypted credentials using `destination.N.stream_key_file` and optionally
 Configuration and application lifecycle changes belong to the service manager.
 
 Server URLs may have multi-segment application paths; managed mode always appends
-the separate stream key. Do not embed the key in the server URL. Kick also accepts
+the separate stream key. Enabled destinations without that key fail at startup
+before creating managed state; disabled destination metadata needs no credential.
+Do not embed the key in the server URL. Kick also accepts
 a host-only `rtmps://host[:port]` server and adds `/app`. Userinfo, query strings,
 fragments, traversal and empty path segments are rejected without echoing values.
 

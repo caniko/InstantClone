@@ -324,6 +324,24 @@ pub fn prepare() -> io::Result<()> {
         rendered.push_str(line);
         rendered.push('\n');
     }
+    let settings = crate::config::Settings::from_text(&rendered);
+    // Managed URLs contain only the server application. They never embed a key,
+    // so every enabled provider needs its separately provisioned credential.
+    for destination in &settings.destinations {
+        if destination.enabled
+            && destination.platform != "sink"
+            && destination.stream_key.is_empty()
+        {
+            return Err(invalid(&format!(
+                "InstantClone destination '{}': separate stream key required",
+                destination.name
+            )));
+        }
+    }
+    let errors = settings.validate();
+    if !errors.is_empty() {
+        return Err(invalid(&format!("InstantClone: {}", errors.join("; "))));
+    }
     for directory in directories {
         private_dir(directory)?;
     }

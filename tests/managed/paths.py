@@ -51,6 +51,19 @@ def run(binary):
             assert shared.stat().st_mode & 0o777 == 0o755
             assert not (root / 'new-cache').exists()
         print('PASS: relative/traversing/symlink/shared paths rejected before directory creation or chmod')
+        template.write_text(f'configured=true\nbuffer_path={root}/cache/stream.buf\noverlays_dir={root}/overlays\n'
+                            'destination.0.name=Missing key\ndestination.0.id=missing\n'
+                            'destination.0.enabled=true\ndestination.0.platform=custom\n'
+                            'destination.0.custom_egress_url=rtmp://host.invalid/group/app\n')
+        env = os.environ | {'INSTANTCLONE_MANAGED':'1','INSTANTCLONE_TEMPLATE':str(template),
+                            'XDG_RUNTIME_DIR':str(runtime),'CONFIG_PATH':str(runtime / 'instance/config')}
+        result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5)
+        assert result.returncode != 0, 'multi-segment server with no separate key accepted'
+        assert b'Missing key' in result.stderr, 'missing-key diagnostic lost destination identity'
+        assert b'separate stream key required' in result.stderr
+        for untouched in ['runtime/instance','cache','overlays']:
+            assert not (root / untouched).exists(), f'missing-key validation mutated {untouched}'
+        print('PASS: managed multi-segment server cannot be mistaken for an embedded key')
 
 
 if __name__ == '__main__':

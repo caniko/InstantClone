@@ -89,6 +89,12 @@ headless Chromium interaction tests. No provider is contacted and CI does not
 deploy or publish runtime closures. Exact revisions and Nix result receipts are
 retained as workflow artifacts.
 
+The dual-relay gate forwards four independent landscape destinations and four
+independent portrait destinations concurrently. It checks all eight recordings'
+dimensions, continued growth of every portrait sink while landscape is stopped,
+and fresh decoded frames at all four landscape sinks after restart. This proves
+local fan-out and restart isolation; provider/account acceptance is a separate gate.
+
 `managed-security` additionally exercises real HTTP login/logout, anonymous and
 invalid credential rejection, protected self/peer bridging, private-file guards,
 and real-server Chromium interactions. Rust tests reject expired sessions over

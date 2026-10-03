@@ -2,6 +2,7 @@
 
 Usage: python desk_browser.py CHROMIUM [SCREENSHOT_PATH]
 """
+import os
 import subprocess
 import sys
 import tempfile
@@ -62,13 +63,22 @@ with tempfile.TemporaryDirectory(prefix='desk-browser-') as tmp:
         '<script>' + fixture + '</script><script>' + (assets / 'managed-desk.js').read_text()
         + '</script><script>' + checks + '</script>')
     page.write_text(html)
+    # Nix builders have HOME=/homeless-shelter. Chromium's crashpad needs a
+    # writable HOME/XDG configuration tree even with a separate browser profile.
+    environment = os.environ.copy()
+    for name, directory in [('HOME', 'home'), ('XDG_CONFIG_HOME', 'config'),
+                            ('XDG_CACHE_HOME', 'cache')]:
+        location = Path(tmp) / directory
+        location.mkdir(mode=0o700)
+        environment[name] = str(location)
     command = [sys.argv[1], '--headless', '--no-sandbox', '--disable-gpu',
                '--no-first-run', '--disable-background-networking',
                '--user-data-dir=' + str(Path(tmp) / 'profile'),
                '--window-size=360,900', '--virtual-time-budget=5000', '--dump-dom']
     if len(sys.argv) > 2:
         command.append('--screenshot=' + str(Path(sys.argv[2]).resolve()))
-    result = subprocess.run(command + [page.as_uri()], capture_output=True, text=True, timeout=30, check=False)
+    result = subprocess.run(command + [page.as_uri()], env=environment,
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr[-2000:]
     assert 'data-test="PASS"' in result.stdout, result.stdout[-4000:]
     print('PASS: Chromium dual-program rendering, rejected actions, scope isolation and offline controls')

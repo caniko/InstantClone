@@ -1305,6 +1305,17 @@ impl Settings {
     /// IPv6 disabled cannot bind it, and `supervise_ingest` drops it rather
     /// than retrying forever.
     pub fn ingest_addrs(&self) -> Vec<String> {
+        if crate::managed::enabled() {
+            return vec![format!(
+                "{}:{}",
+                if self.ingest_bind_all {
+                    "0.0.0.0"
+                } else {
+                    "127.0.0.1"
+                },
+                self.ingest_port
+            )];
+        }
         let (v4, v6) = if self.ingest_bind_all {
             ("0.0.0.0", "[::]")
         } else {
@@ -1408,7 +1419,7 @@ impl Settings {
             // full session (the edit form needs it), never to a dock-token
             // caller - the redacted `egress_url_redacted` below is enough to
             // render. Consistent with how ingest_key / dock_token are gated.
-            let custom_url_shown = if include_secrets {
+            let custom_url_shown = if include_secrets && !crate::managed::enabled() {
                 d.custom_egress_url.as_str()
             } else {
                 ""
@@ -1752,6 +1763,9 @@ pub fn elide_after_last_slash(url: &str, min_chars: usize, head: usize, tail: us
 }
 
 fn redact_key(url: &str) -> String {
+    if crate::managed::enabled() {
+        return "[redacted]".into();
+    }
     // Find last '/' and keep first 4 + last 4 of whatever follows.
     let elided = elide_after_last_slash(url, 12, 4, 4);
     if elided != url {

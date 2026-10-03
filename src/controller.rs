@@ -2123,14 +2123,19 @@ pub async fn run_egress(
             tokio::time::sleep(Duration::from_millis(500)).await;
             continue;
         }
-        eprintln!(
-            "[egress {}] connecting to {}:{}/{}",
-            label, parsed.host, parsed.port, parsed.app
-        );
-        ctrl.log(format!(
-            "[{}] connecting to {}:{}",
-            label, parsed.host, parsed.port
-        ));
+        if crate::managed::enabled() {
+            eprintln!("[egress {}] connecting (endpoint redacted)", label);
+            ctrl.log(format!("[{}] connecting (endpoint redacted)", label));
+        } else {
+            eprintln!(
+                "[egress {}] connecting to {}:{}/{}",
+                label, parsed.host, parsed.port, parsed.app
+            );
+            ctrl.log(format!(
+                "[{}] connecting to {}:{}",
+                label, parsed.host, parsed.port
+            ));
+        }
         match EgressClient::connect(&parsed).await {
             Ok(client) => {
                 backoff = Duration::from_secs(1);
@@ -2198,6 +2203,11 @@ pub async fn run_egress(
 /// Replace any occurrence of `secret` (case-sensitive) in `text` with a
 /// short redaction so it doesn't end up in logs or webhook payloads.
 fn scrub_secret(text: &str, secret: &str) -> String {
+    // Remote errors can echo a transformed/partial key (e.g. YouTube backup).
+    // Do not send any server-controlled error details to the managed journal.
+    if crate::managed::enabled() {
+        return "remote RTMP error (details suppressed in managed mode)".into();
+    }
     // Characters, not bytes. A stream key is whatever the user pasted, and
     // this runs on the egress error path - so a byte-offset slice here aborts
     // the process (`panic = "abort"`) at the exact moment a destination is

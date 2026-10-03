@@ -33,6 +33,11 @@ mod controller;
 mod crypto;
 mod h264;
 mod https;
+#[cfg(unix)]
+mod managed;
+#[cfg(not(unix))]
+#[path = "managed_unsupported.rs"]
+mod managed;
 mod midi;
 mod obs_register;
 mod portcheck;
@@ -56,6 +61,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 fn main() -> std::io::Result<()> {
+    managed::prepare()?;
     // Subcommand dispatch - keeps the proxy + sink in one binary so users
     // don't need two `cargo run` recipes to test end-to-end locally.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -159,6 +165,12 @@ fn main() -> std::io::Result<()> {
             &format!("{}:{}", host_ingest, settings.ingest_port),
             relaunched,
         ) {
+            if managed::enabled() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    "InstantClone: configured ingest port is unavailable",
+                ));
+            }
             match resolve_port_conflict("RTMP port", settings.ingest_port, host_ingest) {
                 Some(new_port) => settings.ingest_port = new_port,
                 None => return Ok(()),
@@ -170,6 +182,12 @@ fn main() -> std::io::Result<()> {
             "127.0.0.1"
         };
         if !port_free_with_grace(&format!("{}:{}", host_web, settings.web_port), relaunched) {
+            if managed::enabled() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    "InstantClone: configured dashboard port is unavailable",
+                ));
+            }
             match resolve_port_conflict("Web port", settings.web_port, host_web) {
                 Some(new_port) => settings.web_port = new_port,
                 None => return Ok(()),
@@ -254,7 +272,7 @@ fn main() -> std::io::Result<()> {
         // it exits, so a repair now would simply be undone. We keep the
         // question open until OBS closes and fix it then, which lands before
         // the next time OBS reads the file - the only moment it could matter.
-        {
+        if !managed::enabled() {
             let ctrl = ctrl.clone();
             let rx = rx.clone();
             tokio::spawn(async move {
@@ -566,6 +584,10 @@ async fn supervise_ingest_leg(addr: String, ctrl: Arc<controller::Controller>, r
                 deadline = std::time::Instant::now() + OPTIONAL_BIND_GRACE;
             }
             Err(e) => {
+                if managed::enabled() {
+                    eprintln!("InstantClone: configured ingest listener failed: {e}");
+                    std::process::exit(1);
+                }
                 let still_settling = e.kind() == std::io::ErrorKind::AddrInUse
                     && std::time::Instant::now() < deadline;
                 if !required && !still_settling {
@@ -1094,6 +1116,7 @@ async fn supervise_web(
         tokio::select! {
             r = &mut handle => {
                 eprintln!("[web] task ended: {:?}", r);
+                if managed::enabled() { std::process::exit(1); }
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 handle = spawn_one(current_addr.clone());
             }

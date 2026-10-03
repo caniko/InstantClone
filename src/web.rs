@@ -188,6 +188,12 @@ Connection: close
     // `path` here still carries the `?...` suffix.
     let bare_path = path.split_once('?').map(|(p, _)| p).unwrap_or(path);
 
+    if !crate::managed::request_allowed(method, bare_path) {
+        write_simple(&mut sock, "403 Forbidden", "application/json",
+            r#"{"ok":false,"error":"Managed by Nix/systemd; change declarative configuration or use systemctl --user."}"#, "").await?;
+        return Ok(());
+    }
+
     // Request body: only POST routes (the config form, login, the auth
     // mutations) consume one, so we read a body for POST alone. A GET or HEAD
     // that advertises a large Content-Length therefore never makes us allocate
@@ -243,6 +249,43 @@ Connection: close
         AuthDecision::Handled => return Ok(()),
         AuthDecision::Allow { cookie, is_admin } => (cookie, is_admin),
     };
+
+    if crate::managed::enabled() {
+        if method == "GET" && (bare_path == "/" || bare_path == "/dock") {
+            write_simple(
+                &mut sock,
+                "200 OK",
+                "text/html; charset=utf-8",
+                include_str!("managed-desk.html"),
+                &dock_set_cookie,
+            )
+            .await?;
+            return Ok(());
+        }
+        if method == "GET" && bare_path == "/desk/app.js" {
+            write_simple(
+                &mut sock,
+                "200 OK",
+                "text/javascript; charset=utf-8",
+                include_str!("managed-desk.js"),
+                &dock_set_cookie,
+            )
+            .await?;
+            return Ok(());
+        }
+        if bare_path.starts_with("/desk/") {
+            let (status, json) = crate::managed::desk_request(method, bare_path, body).await;
+            write_simple(
+                &mut sock,
+                status,
+                "application/json",
+                &json,
+                &dock_set_cookie,
+            )
+            .await?;
+            return Ok(());
+        }
+    }
 
     // Fast-path: static, pre-gzipped dashboard + dock. These two pages
     // dominate the binary (~125 KB raw); shipping only the gz blob saves
@@ -386,7 +429,10 @@ Connection: close
     };
     let resp = format!(
         "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Cache-Control: no-store\r\nConnection: close\r\n\r\n",
-        status, ctype, payload.len(), acao
+        status,
+        ctype,
+        payload.len(),
+        acao
     );
     sock.write_all(resp.as_bytes()).await?;
     sock.write_all(payload.as_bytes()).await?;
@@ -2904,7 +2950,7 @@ async fn test_egress(
                     r#"{{"ok":false,"error":"{}"}}"#,
                     json_escape(&e.to_string())
                 ),
-            )
+            );
         }
     };
     // DNS + TCP connect with 3 s timeout. We deliberately don't run the
@@ -3326,7 +3372,7 @@ fn destinations_json(ctrl: &Controller, settings: &Arc<watch::Sender<Settings>>)
             // form needs it to populate the input field. Anyone reading this
             // endpoint already has localhost access and can read the plaintext
             // config file directly, so this doesn't expand the risk surface.
-            cu = json_escape_quoted(&d.custom_egress_url),
+            cu = json_escape_quoted(if crate::managed::enabled() { "" } else { &d.custom_egress_url }),
             ti = json_escape_quoted(&d.twitch_ingest),
             yi = json_escape_quoted(&d.youtube_ingest),
             va = d.vod_audio,
@@ -3352,6 +3398,9 @@ fn destinations_json(ctrl: &Controller, settings: &Arc<watch::Sender<Settings>>)
 }
 
 fn redact_url(url: &str) -> String {
+    if crate::managed::enabled() {
+        return "[redacted]".into();
+    }
     crate::config::elide_after_last_slash(url, 12, 4, 4)
 }
 
@@ -3692,7 +3741,7 @@ fn serve_overlay_file(
                 "404 Not Found",
                 "text/plain; charset=utf-8",
                 format!("overlay '{}' not found in {}", name, dir.display()),
-            )
+            );
         }
     };
     let canon_dir = match dir.canonicalize() {
@@ -3704,7 +3753,7 @@ fn serve_overlay_file(
                 "500 Internal Server Error",
                 "text/plain; charset=utf-8",
                 "overlays_dir is misconfigured".into(),
-            )
+            );
         }
     };
     if !canon_path.starts_with(&canon_dir) {
@@ -4191,7 +4240,11 @@ async fn write_simple(
 ) -> io::Result<()> {
     let resp = format!(
         "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Cache-Control: no-store\r\nConnection: close\r\n\r\n{}",
-        status, ctype, body.len(), extra_headers, body
+        status,
+        ctype,
+        body.len(),
+        extra_headers,
+        body
     );
     sock.write_all(resp.as_bytes()).await
 }

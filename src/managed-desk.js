@@ -1,0 +1,126 @@
+'use strict';
+const PROGRAMS = ['landscape', 'portrait'];
+const label = id => id === 'landscape' ? 'Landscape' : 'Portrait';
+const FRESH_MS = 5000;
+function fresh(program, now) { return !!program.state && !program.error && now - program.updated < FRESH_MS; }
+function orientation(res, id) {
+  const match = /^(\d+)x(\d+)$/.exec(res || '');
+  return match ? (id === 'portrait' ? +match[2] > +match[1] : +match[1] > +match[2]) : null;
+}
+function destinationStatus(program, destination, previous, now) {
+  if (!program.enabled) return ['Not configured', 'muted'];
+  if (!fresh(program, now)) return ['Unknown · relay offline', 'bad'];
+  if (!destination) return ['Not configured', 'muted'];
+  if (!destination.enabled) return ['Disabled', 'muted'];
+  if (!program.state.ingest_alive) return ['Waiting for program', 'warn'];
+  if (!destination.alive) return ['Disconnected · retrying', 'warn'];
+  if (previous && program.updated > program.previousUpdated && destination.bytes_sent > previous.bytes_sent) return ['Sending', 'good'];
+  return ['Connected · no recent media', 'warn'];
+}
+if (typeof module !== 'undefined') module.exports = {fresh, orientation, destinationStatus};
+if (typeof document !== 'undefined') {
+  const $ = id => document.getElementById(id);
+  const programs = Object.fromEntries(PROGRAMS.map(id => [id, {enabled:false, state:null, updated:0, destinations:[]} ]));
+  let info = null, busy = false;
+  function node(tag, text, className) { const el = document.createElement(tag); el.textContent = text; if (className) el.className = className; return el; }
+  async function request(path, body) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch(path, {method:body === undefined ? 'GET' : 'POST', body, signal:controller.signal, cache:'no-store', headers:body === undefined ? {} : {'Content-Type':'application/x-www-form-urlencoded'}});
+      const data = await response.json();
+      if (!response.ok || data.ok === false) throw new Error(data.error || `Request rejected (${response.status})`);
+      return data;
+    } finally { clearTimeout(timeout); }
+  }
+  function render() {
+    const now = Date.now(), alerts = [], rows = new Map();
+    $('programs').replaceChildren();
+    for (const id of PROGRAMS) {
+      const p = programs[id], live = fresh(p, now), card = node('section', '', 'program');
+      const head = node('div', '', 'program-head'); head.append(node('h3',label(id)));
+      head.append(node('span', !info ? 'Unknown' : !p.enabled ? 'Not configured' : !live ? 'Offline' : p.state.ingest_alive ? 'Receiving' : 'No program', live && p.state.ingest_alive ? 'status good' : 'status warn')); card.append(head);
+      const resolutions = [...new Set((p.state?.destinations || []).map(d => d.video_res).filter(Boolean))];
+      card.append(node('p', live ? `${resolutions.join(' · ') || 'Dimensions unknown'} · ${((p.state.stats?.bitrate_kbps || 0)/1000).toFixed(1)} Mb/s` : p.updated ? `Last response ${Math.floor((now-p.updated)/1000)} seconds ago` : 'No telemetry', 'muted'));
+      $('programs').append(card);
+      if (info && p.enabled && !live) alerts.push(`${label(id)}: relay unavailable. Inspect its user service; last state is not current.`);
+      if (live && !p.state.ingest_alive) alerts.push(`${label(id)}: no program received. Check this program’s OBS output.`);
+      if (live && resolutions.some(res => orientation(res,id) === false)) alerts.push(`${label(id)}: unexpected dimensions (${resolutions.join(', ')}). Check the OBS canvas and output.`);
+      if (live && p.state.backpressure) alerts.push(`${label(id)}: relay backpressure. Check upload capacity and delay buffer.`);
+      for (const d of p.destinations) {
+        const key = `${d.platform}:${d.name}`;
+        if (!rows.has(key)) rows.set(key, {name:d.name, platform:d.platform});
+        rows.get(key)[id] = d;
+      }
+    }
+    $('destinations').replaceChildren();
+    for (const row of rows.values()) {
+      const tr = document.createElement('tr'), name = node('th',row.name); name.scope='row';
+      name.append(node('small', row.platform === 'custom' ? 'Custom provider' : row.platform)); tr.append(name);
+      for (const id of PROGRAMS) {
+        const p=programs[id], configured=row[id], d=p.state?.destinations?.find(x=>x.id===configured?.id);
+        const previous=p.previous?.destinations?.find(x=>x.id===configured?.id);
+        const [text,tone]=destinationStatus(p,d,previous,now), td=node('td',text,tone);
+        if (d && fresh(p,now)) td.append(node('small',`${((d.bitrate_kbps || 0)/1000).toFixed(1)} Mb/s · ${d.reconnects || 0} reconnects`));
+        tr.append(td);
+        if (configured && tone === 'warn') alerts.push(`${label(id)} / ${row.name}: ${text.toLowerCase()}.`);
+      }
+      $('destinations').append(tr);
+    }
+    if (!rows.size) { const tr=document.createElement('tr'), td=node('td','No destinations available. Open setup & diagnostics.','muted'); td.colSpan=3; tr.append(td); $('destinations').append(tr); }
+    $('attention').replaceChildren(...alerts.map(text=>node('p',text,'notice')));
+    $('summary').textContent = !info ? 'Desk configuration unavailable · retrying' : alerts.length ? `${alerts.length} items need attention` : 'Local relay telemetry current';
+    const p=programs[$('scope').value], live=fresh(p,now), phase=p.state?.phase;
+    $('delay').textContent=live ? `${label($('scope').value)} · ${(p.state.current_delay_ms/1000).toFixed(1)} s behind real time · ${phase}` : 'Current state unavailable · controls paused';
+    if (live && p.state.safe_cut_pending) $('delay').textContent+=` · returning to real time in approximately ${Math.ceil(p.state.safe_cut_remaining_ms/1000)} s`;
+    for (const button of document.querySelectorAll('[data-action]')) {
+      const action=button.dataset.action;
+      button.hidden = !live || (action==='arm' && phase!=='idle') || (action==='activate' && phase!=='ready') || (action==='disarm' && !['ready','preparing'].includes(phase)) || (['stop','cut-after'].includes(action) && phase!=='active');
+      if (action==='cancel-cut') button.hidden=!live || !p.state.safe_cut_pending;
+      if (action==='cut-after' && p.state?.safe_cut_pending) button.hidden=true;
+      button.disabled = busy || !live || !p.state.ingest_alive || (action==='activate' && phase!=='ready') || (action==='disarm' && !['ready','preparing'].includes(phase)) || (['stop','cut-after'].includes(action) && phase!=='active') || (action==='arm' && phase!=='idle');
+    }
+  }
+  async function poll() {
+    try {
+      if (!info) {
+        info=await request('/desk/info');
+        $('setup').replaceChildren();
+        for (const id of PROGRAMS) {
+          programs[id].enabled=info[id].enabled;
+          $('setup').append(node('p',`${label(id)}: ${info[id].enabled ? `OBS custom output rtmp://127.0.0.1:${info[id].ingestPort}/live · local stream key: desk` : 'relay not enabled'}`));
+        }
+      }
+      await Promise.all(PROGRAMS.filter(id=>programs[id].enabled).map(async id=>{
+        const p=programs[id], version=p.version;
+        try {
+          const [state,destinations]=await Promise.all([request(`/desk/${id}/state`),request(`/desk/${id}/destinations`)]);
+          if (busy || version !== p.version) return;
+          if (!Array.isArray(destinations) || !Array.isArray(state.destinations)) throw new Error('Invalid relay telemetry');
+          p.previous=p.error ? null : p.state; p.previousUpdated=p.updated;
+          p.state=state; p.destinations=destinations; p.updated=Date.now(); p.error=null;
+        } catch(error) { if (!busy && version === p.version) p.error=error.message; }
+      }));
+    } catch(error) { $('feedback').textContent=error.message; }
+    render(); setTimeout(poll,1000);
+  }
+  $('scope').addEventListener('change',render);
+  for (const button of document.querySelectorAll('[data-action]')) button.addEventListener('click',async()=>{
+    if (button.disabled || busy) return;
+    const id=$('scope').value, action=button.dataset.action;
+    if (action==='stop' && !confirm(`Return ${label(id)} to real time now? Buffered footage will be skipped. The other program is unaffected.`)) return;
+    const seconds=Number($('seconds').value);
+    if (action==='arm' && (!Number.isInteger(seconds) || seconds<1 || seconds>600)) { $('feedback').textContent='Enter a whole number from 1 to 600 seconds.'; return; }
+    programs[id].version=(programs[id].version || 0)+1;
+    busy=true; render(); $('feedback').textContent=`${label(id)}: requesting ${button.textContent.toLowerCase()}…`;
+    try {
+      const state=await request(`/desk/${id}/${action}`,action==='arm' ? `ms=${seconds*1000}` : '');
+      if (typeof state.phase!=='string') throw new Error('Action response had no observed state. Refresh before retrying.');
+      programs[id].previous=null; programs[id].state=state; programs[id].updated=Date.now(); programs[id].error=null;
+      $('feedback').textContent=`${label(id)}: relay accepted the action · observed state: ${state.phase}.`;
+    } catch(error) { $('feedback').textContent=`${label(id)}: ${error.message} Outcome may be unknown; inspect refreshed state before retrying.`; }
+    finally { busy=false; render(); }
+  });
+  if (location.pathname==='/') $('diagnostics').open=true;
+  render(); poll(); setInterval(render,1000);
+}

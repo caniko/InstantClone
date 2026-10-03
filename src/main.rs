@@ -79,7 +79,7 @@ fn main() -> std::io::Result<()> {
         #[cfg(all(windows, not(debug_assertions)))]
         unsafe {
             use windows_sys::Win32::System::Console::{
-                ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE,
+                AllocConsole, AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE,
             };
             let h = GetStdHandle(STD_OUTPUT_HANDLE);
             if h.is_null() && AttachConsole(ATTACH_PARENT_PROCESS) == 0 {

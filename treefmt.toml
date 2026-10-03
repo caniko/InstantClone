@@ -1,6 +1,6 @@
 [formatter.rust]
 command = "rustfmt"
-options = ["--edition", "2021"]
+options = ["--config-path", "rustfmt.toml"]
 includes = ["*.rs"]
 
 [formatter.nix]

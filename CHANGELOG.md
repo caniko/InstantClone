@@ -6,6 +6,20 @@ All notable changes will land here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in Linux managed relays with startup-loaded credentials, private runtime
+  state, and service-manager-owned configuration and lifecycle.
+- A Broadcast Desk for independent landscape and portrait programs, with scoped
+  delay controls, ingest setup instructions, destination telemetry, and visible
+  authentication and connection failures.
+- Public Nix package and local runtime qualification, including four egresses
+  per program, credential mapping, restart isolation, and protected browser tests.
+
+### Fixed
+
+- Keep OBS server-address selections intact during desk polling.
+
 ## [0.1.14] - Hotkeys and MIDI for the delay, a dashboard password, and Linux builds
 
 ### Drive the delay without alt-tabbing

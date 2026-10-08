@@ -7,8 +7,10 @@ production credentials, private flake inputs or provider accounts.
 Set `INSTANTCLONE_MANAGED=1`, `INSTANTCLONE_TEMPLATE` to a non-secret template,
 and `CONFIG_PATH` to a private runtime configuration file. Templates reference
 decrypted credentials using `destination.N.stream_key_file` and optionally
-`destination.N.custom_egress_url_file`. Plaintext is read only at process startup.
-Direct `stream_key` fields are rejected, including legacy and disabled entries.
+`destination.N.custom_egress_url_file`. Protect a publisher with
+`ingest_key_file=/path/to/ingest-key`; the provisioned key contains only letters,
+numbers, `-` and `_`. Plaintext is read only at process startup. Direct
+`ingest_key` and `stream_key` fields are rejected, including legacy and disabled entries.
 Each enabled destination requires an explicit, nonempty, unique `destination.N.id`.
 Configuration and application lifecycle changes belong to the service manager.
 
@@ -21,7 +23,10 @@ a host-only `rtmps://host[:port]` server and adds `/app`. Userinfo, query string
 fragments, traversal and empty path segments are rejected without echoing values,
 for both inline servers and credential-file servers.
 
-Managed startup rejects invalid numeric declarations instead of recovering to
+Managed startup rejects malformed booleans and routing enums instead of selecting
+defaults: booleans are `true` or `false`, destination `stream_format` is
+`horizontal` or `vertical`, and `audio_track` is `auto`, `both`, `1` or `2`.
+It also rejects invalid numeric declarations instead of recovering to
 different defaults: ports must be nonzero and distinct, `buffer_mb` must be
 50–1048576, and `target_delay_ms`/`armed_delay_ms` must be at most 600000.
 `auto_arm_delay_ms` must be 1–600000. SIGTERM and fatal ingest/dashboard listener
@@ -56,6 +61,8 @@ its PBKDF2 hash in a private user-owned file and use
 format is `pbkdf2-sha256$ITERATIONS$SALT_HEX$DIGEST_HEX`, with a 16-byte salt,
 32-byte digest and 1–1,000,000 iterations. Login/logout work in managed mode;
 auth configuration mutations remain owned by the service manager.
+Password-protected programs must also declare `dock_token_file`; incomplete
+authentication/control-token pairing fails before persisting runtime settings.
 
 Give each program a distinct 16–128-character hex control token, stored in a
 private user-owned file (mode `0400` or `0600`). Set
@@ -89,6 +96,9 @@ and stale or unauthenticated program controls remain paused.
 The same-origin bridge only contacts fixed loopback ports and exposes state,
 destination summaries and supported delay actions. Credentials and endpoint URLs
 are omitted from managed dashboard responses and connection logs.
+When tracing is enabled, managed wire traces retain event categories and timing
+and redact all detail strings, including endpoints and remote status descriptions.
+Standalone wire tracing retains its byte-level diagnostic details.
 
 ## Public qualification
 
@@ -108,6 +118,8 @@ independent portrait destinations concurrently. It checks all eight recordings'
 dimensions, continued growth of every portrait sink while landscape is stopped,
 and fresh decoded frames at all four landscape sinks after restart. This proves
 local fan-out and restart isolation; provider/account acceptance is a separate gate.
+Both test publishers remain alive until the assertions finish and are explicitly
+stopped during cleanup, so startup/reconnect budgets cannot expire the portrait input.
 
 `managed-security` additionally exercises real HTTP login/logout, anonymous and
 invalid credential rejection, protected self/peer bridging, private-file guards,

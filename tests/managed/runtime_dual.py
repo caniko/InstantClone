@@ -180,7 +180,6 @@ def run(binary, package_derivation):
                 'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-re',
                 '-f', 'lavfi', '-i', f'testsrc2=size={size}:rate=10',
                 '-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=44100',
-                '-t', '60',
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-g', '10',
                 '-c:a', 'aac', '-f', 'flv', f'rtmp://127.0.0.1:{ingest}/live/local',
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -224,7 +223,7 @@ def run(binary, package_derivation):
             for i, (receiver, path) in enumerate(zip(recv_v, out_v, strict=True)):
                 start_sink(receiver, path, f'v-{i}')
             pub_h = start_publisher(ingest_h, '160x90', 'h')
-            start_publisher(ingest_v, '90x160', 'v')
+            pub_v = start_publisher(ingest_v, '90x160', 'v')
 
             def received(p, minimum=10000):
                 return p.exists() and p.stat().st_size > minimum
@@ -270,6 +269,7 @@ def run(binary, package_derivation):
             # pre-restart size while H is restarting/resuming.
             wait(lambda: all(path.stat().st_size > size + 10000 for path, size in zip(out_v, v_pre_restart, strict=True)), 20)
             assert proc_v.poll() is None and proc_h.poll() is None
+            assert pub_v.poll() is None, 'portrait publisher ended before restart-isolation assertions'
             for path in out_h_restart:
                 assert dims(path) == (160, 90), f'restarted H relay sent wrong dimensions to {path}'
                 decoded = subprocess.run(
@@ -285,7 +285,7 @@ def run(binary, package_derivation):
                 assert dims(path) == (90, 160), f'V relay changed dimensions after H restart in {path}'
 
             stop(pub_h)
-            # V publisher may have finished its 60s window; stop idempotently.
+            stop(pub_v)
             stop(proc_h)
             stop(proc_v)
             assert proc_h.returncode == 0

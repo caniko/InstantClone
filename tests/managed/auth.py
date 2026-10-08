@@ -24,6 +24,10 @@ def run(binary, chromium=None, screenshot=None):
         web_h, web_v, ingest_h, ingest_v = [port() for _ in range(4)]
         tokens = [secrets.token_hex(32), secrets.token_hex(32)]
         ingest_keys = [secrets.token_hex(20), secrets.token_hex(20)]
+        ingest_files = [root / 'h.ingest', root / 'v.ingest']
+        for file, key in zip(ingest_files, ingest_keys):
+            file.write_text(key + '\n')
+            file.chmod(0o600)
         token_files = [root / 'h.token', root / 'v.token']
         for file, token in zip(token_files, tokens):
             file.write_text(token)
@@ -57,7 +61,7 @@ def run(binary, chromium=None, screenshot=None):
                 template.write_text('\n'.join([
                     'configured=true', f'web_port={web}', 'web_bind_all=false',
                     f'ingest_port={ingest}', 'ingest_bind_all=false', 'buffer_mb=50',
-                    f'ingest_key={ingest_keys[index]}',
+                    f'ingest_key_file={ingest_files[index]}',
                     f'buffer_path={root}/cache-{index}/stream.buf',
                     f'overlays_dir={root}/state-{index}/overlays',
                     'tracing_enabled=false', 'update_check_enabled=false',
@@ -79,6 +83,15 @@ def run(binary, chromium=None, screenshot=None):
                     'INSTANTCLONE_DESK_LANDSCAPE_TOKEN_FILE':str(token_files[0]),
                     'INSTANTCLONE_DESK_PORTRAIT_TOKEN_FILE':str(token_files[1]),
                 }
+                if index == 0:
+                    original = template.read_text()
+                    template.write_text(original.replace(f'dock_token_file={token_files[index]}\n', ''))
+                    result = subprocess.run([binary, '--no-browser'], env=env, cwd=root,
+                                            capture_output=True, timeout=10, check=False)
+                    assert result.returncode != 0 and b'dock_token_file' in result.stderr
+                    assert not Path(env['CONFIG_PATH']).exists(), 'incomplete authentication pairing persisted'
+                    assert all(value.encode() not in result.stderr for value in tokens + ingest_keys)
+                    template.write_text(original)
                 with (root / f'relay-{index}.log').open('wb') as log:
                     child = subprocess.Popen([binary,'--no-browser'],env=env,cwd=root,stdout=log,stderr=log)
                 children.append(child)

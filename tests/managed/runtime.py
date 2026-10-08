@@ -51,6 +51,9 @@ def run(binary, store_template, package_derivation):
         ingest, web, receiver_a, receiver_b = [port() for _ in range(4)]
         keys = [secrets.token_hex(24), secrets.token_hex(24)]
         ingest_key, control_token = secrets.token_hex(24), secrets.token_hex(32)
+        ingest_file = root / 'ingest.key'
+        ingest_file.write_text(ingest_key + '\n')
+        ingest_file.chmod(0o600)
         control_file = root / 'control.token'
         control_file.write_text(control_token + '\n')
         control_file.chmod(0o600)
@@ -72,10 +75,10 @@ def run(binary, store_template, package_derivation):
         subprocess.run(['age', '-d', '-i', str(identity), '-o', str(server_path), str(encrypted_server)], check=True)
         base = [
             'configured=true', f'ingest_port={ingest}', 'ingest_bind_all=false',
-            f'ingest_key={ingest_key}', f'dock_token_file={control_file}',
+            f'ingest_key_file={ingest_file}', f'dock_token_file={control_file}',
             f'web_port={web}', 'web_bind_all=false', 'buffer_mb=50',
             f'buffer_path={root}/cache/stream.buf', f'overlays_dir={root}/state/overlays',
-            'tracing_enabled=false', 'update_check_enabled=false', 'open_dashboard_on_launch=false',
+            'tracing_enabled=true', 'update_check_enabled=false', 'open_dashboard_on_launch=false',
         ]
         for i, receiver in enumerate([receiver_a, receiver_b]):
             prefix = f'destination.{i}'
@@ -91,8 +94,8 @@ def run(binary, store_template, package_derivation):
         env = os.environ | {
             'XDG_RUNTIME_DIR': str(runtime), 'CONFIG_PATH': str(config),
             'INSTANTCLONE_MANAGED': '1', 'INSTANTCLONE_TEMPLATE': str(template),
-            'INSTANTCLONE_NO_TRACE': '1',
         }
+        env.pop('INSTANTCLONE_NO_TRACE', None)
         logs = root / 'proxy.log'
         children = []
         def start():
@@ -128,7 +131,16 @@ def run(binary, store_template, package_derivation):
                 ('destination.0.stream_key=plaintext-test-key', b'stream_key_file'),
                 ('destination.0.enabled=false\ndestination.0.stream_key=plaintext-test-key', b'stream_key_file'),
                 ('stream_key=plaintext-test-key', b'stream_key_file'),
+                ('ingest_key=plaintext-test-key', b'ingest_key_file'),
             ]
+            for field in [
+                'configured', 'ingest_bind_all', 'web_bind_all', 'tracing_enabled',
+                'auto_arm_on_connect', 'auto_activate_when_ready', 'update_check_enabled',
+                'open_dashboard_on_launch', 'overlays_seeded', 'destination.0.enabled',
+                'destination.0.vod_audio', 'destination.0.vod_audio_inject_eb',
+                'destination.0.stream_format', 'destination.0.audio_track',
+            ]:
+                declarations.append((f'{field}=treu', b'invalid declared'))
             for url in [
                 'rtmp://user:plaintext-test-key@host/live', 'rtmp://host/live?key=plaintext-test-key',
                 'rtmp://host/live#fragment', 'rtmp://host/../live', 'rtmp://host:65536/live',
@@ -152,6 +164,7 @@ def run(binary, store_template, package_derivation):
             assert config.stat().st_mode & 0o777 == 0o600
             assert config.parent.stat().st_mode & 0o777 == 0o700
             content = config.read_text()
+            assert f'ingest_key={ingest_key}' in content and 'ingest_key_file=' not in content
             assert all(f'destination.{i}.stream_key={key}' in content for i, key in enumerate(keys))
             assert 'stream_key_file=' not in content
             assert f'destination.0.custom_egress_url=rtmp://127.0.0.1:{receiver_a}/live' in content
@@ -217,6 +230,12 @@ def run(binary, store_template, package_derivation):
             assert proc.returncode == 0
             assert not (root / 'cache/stream.buf').exists()
             assert b'Shutting down (sigterm)' in logs.read_bytes()
+            trace = runtime / 'instantclone-trace.log'
+            assert trace.exists() and b'EGRESS_DIAL' in trace.read_bytes(), 'tracing was not exercised'
+            assert b'managed detail redacted' in trace.read_bytes(), 'managed trace policy was not applied'
+            assert all(value.encode() not in trace.read_bytes()
+                       for value in keys + [ingest_key, control_token, server_url]), 'credential leaked into trace'
+            assert f'127.0.0.1:{receiver_b}'.encode() not in trace.read_bytes(), 'secret endpoint leaked into trace'
             stop(publisher)
             # Runtime edits are discarded, and fresh secret bytes read on restart.
             rotated = secrets.token_urlsafe(3)
@@ -229,16 +248,17 @@ def run(binary, store_template, package_derivation):
             for path in ['/state', '/config', '/destinations', '/logs']:
                 assert rotated.encode() not in request(path)[1], 'short secret leaked'
             stop(proc)
-            for path in [key_paths[0]]:
+            for path, name, restored in [(key_paths[0], 'local-0', rotated),
+                                         (ingest_file, 'ingest', ingest_key)]:
                 for payload in [b'', b'\n', b'bad\nkey', b'bad\x00key', b'bad/key', b' key', b'key\n\n']:
                     path.write_bytes(payload)
                     result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime, capture_output=True, timeout=10, check=False)
                     assert result.returncode != 0
-                    assert b"destination 'local-0'" in result.stderr and b'bad' not in result.stderr
+                    assert f"destination '{name}'".encode() in result.stderr and b'bad' not in result.stderr
                 path.unlink()
                 result = subprocess.run([binary], env=env, cwd=runtime, capture_output=True, timeout=10, check=False)
                 assert result.returncode != 0 and b'missing or unreadable' in result.stderr
-                path.write_text(rotated)
+                path.write_text(restored)
             # Secret server URLs fail closed without echoing their bytes.
             for payload in [b'', b'\n', b'bad\nkey', b'rtmp://127.0.0.1/live?key=secret', b'https://127.0.0.1/live']:
                 server_path.write_bytes(payload)
@@ -256,7 +276,7 @@ def run(binary, store_template, package_derivation):
                     result = subprocess.run([binary], env=env, cwd=runtime, capture_output=True, timeout=10, check=False)
                     assert result.returncode != 0 and b'port is unavailable' in result.stderr
             # Search relevant immutable artifacts and ordinary proxy output explicitly.
-            artifacts = [logs, Path(store_template), Path(package_derivation)]
+            artifacts = [logs, trace, Path(store_template), Path(package_derivation)]
             artifacts += [path for path in Path(binary).parent.parent.rglob('*') if path.is_file()]
             for artifact in artifacts:
                 data = artifact.read_bytes()

@@ -231,6 +231,21 @@ pub fn prepare() -> io::Result<()> {
             "InstantClone: managed templates require stream_key_file instead of plaintext stream keys",
         ));
     }
+    if fields.contains_key("ingest_key") {
+        return Err(invalid(
+            "InstantClone: managed templates require ingest_key_file instead of a plaintext ingest key",
+        ));
+    }
+    if (fields.contains_key("dashboard_password_hash_file")
+        || fields
+            .get("dashboard_password_hash")
+            .is_some_and(|hash| !hash.is_empty()))
+        && !fields.contains_key("dock_token_file")
+    {
+        return Err(invalid(
+            "InstantClone: dashboard authentication requires dock_token_file for program control",
+        ));
+    }
     // The standalone parser recovers malformed numbers by retaining defaults.
     // Declarative startup must reject these before parsing or reading credentials.
     for (key, value) in &fields {
@@ -240,6 +255,23 @@ pub fn prepare() -> io::Result<()> {
             "target_delay_ms" | "armed_delay_ms" | "auto_arm_delay_ms" => {
                 value.parse::<u32>().is_ok()
             }
+            "configured"
+            | "ingest_bind_all"
+            | "web_bind_all"
+            | "tracing_enabled"
+            | "auto_arm_on_connect"
+            | "auto_activate_when_ready"
+            | "update_check_enabled"
+            | "open_dashboard_on_launch"
+            | "overlays_seeded" => matches!(*value, "true" | "false"),
+            key if key.starts_with("destination.") => match key.rsplit('.').next() {
+                Some("enabled" | "vod_audio" | "vod_audio_inject_eb") => {
+                    matches!(*value, "true" | "false")
+                }
+                Some("stream_format") => matches!(*value, "horizontal" | "vertical"),
+                Some("audio_track") => matches!(*value, "auto" | "both" | "1" | "2"),
+                _ => true,
+            },
             _ => true,
         };
         if !valid {
@@ -288,6 +320,14 @@ pub fn prepare() -> io::Result<()> {
             .filter(|(key, _)| !key.starts_with('#'))
             .map(|(key, value)| (key.trim(), value.trim()))
         {
+            if key == "ingest_key_file" {
+                let secret_path = value
+                    .strip_prefix("${XDG_RUNTIME_DIR}/")
+                    .map(|p| Path::new(&runtime).join(p))
+                    .unwrap_or_else(|| value.into());
+                rendered.push_str(&format!("ingest_key={}\n", secret(&secret_path, "ingest")?));
+                continue;
+            }
             if key == "dock_token_file" {
                 let secret_path = value
                     .strip_prefix("${XDG_RUNTIME_DIR}/")

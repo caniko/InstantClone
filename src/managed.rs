@@ -1,5 +1,5 @@
 //! Opt-in Nix/systemd integration. No secret is read until process startup.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -127,14 +127,24 @@ fn server_url(path: &Path, name: &str, platform: &str) -> io::Result<String> {
     let text = std::str::from_utf8(&bytes).map_err(|_| {
         error("server-URL secret must be rtmp(s)://host[:port]/app without credentials or query")
     })?;
+    validate_server_url(text, name, platform)?;
+    Ok(text.to_owned())
+}
+
+/// Inline and credential-file endpoints share one managed server contract.
+fn validate_server_url(text: &str, name: &str, platform: &str) -> io::Result<()> {
+    let error = || {
+        invalid(&format!(
+            "InstantClone destination '{name}': server URL must be rtmp(s)://host[:port]/app without credentials or query"
+        ))
+    };
+    if text.is_empty() || text.len() > 4096 {
+        return Err(error());
+    }
     let rest = text
         .strip_prefix("rtmp://")
         .or_else(|| text.strip_prefix("rtmps://"))
-        .ok_or_else(|| {
-            error(
-                "server-URL secret must be rtmp(s)://host[:port]/app without credentials or query",
-            )
-        })?;
+        .ok_or_else(error)?;
     let valid = (|| {
         let (authority, app) = rest.split_once('/').unwrap_or((rest, ""));
         if authority.is_empty() || authority.bytes().any(|b| b == b'@') {
@@ -174,11 +184,9 @@ fn server_url(path: &Path, name: &str, platform: &str) -> io::Result<String> {
         Some(())
     })();
     if valid.is_none() || !text.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(error(
-            "server-URL secret must be rtmp(s)://host[:port]/app without credentials or query",
-        ));
+        return Err(error());
     }
-    Ok(text.to_owned())
+    Ok(())
 }
 
 pub fn prepare() -> io::Result<()> {
@@ -214,6 +222,43 @@ pub fn prepare() -> io::Result<()> {
                 .map(|(key, value)| (key.trim(), value.trim()))
         })
         .collect();
+    // Reject credentials in the non-secret source, even on disabled destinations
+    // or alongside a file directive. Only runtime credential reads may render keys.
+    if fields.keys().any(|key| {
+        *key == "stream_key" || (key.starts_with("destination.") && key.ends_with(".stream_key"))
+    }) {
+        return Err(invalid(
+            "InstantClone: managed templates require stream_key_file instead of plaintext stream keys",
+        ));
+    }
+    // The standalone parser recovers malformed numbers by retaining defaults.
+    // Declarative startup must reject these before parsing or reading credentials.
+    for (key, value) in &fields {
+        let valid = match *key {
+            "ingest_port" | "web_port" => value.parse::<u16>().is_ok(),
+            "buffer_mb" => value.parse::<u64>().is_ok(),
+            "target_delay_ms" | "armed_delay_ms" | "auto_arm_delay_ms" => {
+                value.parse::<u32>().is_ok()
+            }
+            _ => true,
+        };
+        if !valid {
+            return Err(invalid(&format!("InstantClone: invalid declared {key}")));
+        }
+        if let Some(prefix) = key.strip_suffix(".custom_egress_url") {
+            validate_server_url(
+                value,
+                fields
+                    .get(format!("{prefix}.name").as_str())
+                    .copied()
+                    .unwrap_or("unnamed"),
+                fields
+                    .get(format!("{prefix}.platform").as_str())
+                    .copied()
+                    .unwrap_or("custom"),
+            )?;
+        }
+    }
     let mut directories = vec![path
         .parent()
         .ok_or_else(|| invalid("InstantClone: invalid CONFIG_PATH"))?];
@@ -327,7 +372,21 @@ pub fn prepare() -> io::Result<()> {
     let settings = crate::config::Settings::from_text_unclamped(&rendered);
     // Managed URLs contain only the server application. They never embed a key,
     // so every enabled provider needs its separately provisioned credential.
-    for destination in &settings.destinations {
+    let mut ids = BTreeSet::new();
+    for (index, destination) in settings.destinations.iter().enumerate() {
+        if destination.enabled {
+            let id = fields
+                .get(format!("destination.{index}.id").as_str())
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    invalid(
+                        "InstantClone: explicit nonempty id required for every enabled destination",
+                    )
+                })?;
+            if !ids.insert(*id) {
+                return Err(invalid("InstantClone: duplicate destination id"));
+            }
+        }
         if destination.enabled
             && destination.platform != "sink"
             && destination.stream_key.is_empty()

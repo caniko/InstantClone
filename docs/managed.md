@@ -8,6 +8,8 @@ Set `INSTANTCLONE_MANAGED=1`, `INSTANTCLONE_TEMPLATE` to a non-secret template,
 and `CONFIG_PATH` to a private runtime configuration file. Templates reference
 decrypted credentials using `destination.N.stream_key_file` and optionally
 `destination.N.custom_egress_url_file`. Plaintext is read only at process startup.
+Direct `stream_key` fields are rejected, including legacy and disabled entries.
+Each enabled destination requires an explicit, nonempty, unique `destination.N.id`.
 Configuration and application lifecycle changes belong to the service manager.
 
 Server URLs may have multi-segment application paths; managed mode always appends
@@ -16,7 +18,15 @@ before creating managed state; disabled managed destination metadata needs no cr
 Standalone keeps its existing validation because its dock can enable destinations.
 Do not embed the key in the server URL. Kick also accepts
 a host-only `rtmps://host[:port]` server and adds `/app`. Userinfo, query strings,
-fragments, traversal and empty path segments are rejected without echoing values.
+fragments, traversal and empty path segments are rejected without echoing values,
+for both inline servers and credential-file servers.
+
+Managed startup rejects invalid numeric declarations instead of recovering to
+different defaults: ports must be nonzero and distinct, `buffer_mb` must be
+50–1048576, and `target_delay_ms`/`armed_delay_ms` must be at most 600000.
+`auto_arm_delay_ms` must be 1–600000. SIGTERM and fatal ingest/dashboard listener
+failures use graceful stream teardown and remove the ring file; listener failures
+then report a nonzero exit so the service manager can restart the instance.
 
 Set `XDG_RUNTIME_DIR` to an existing user-owned private directory. `CONFIG_PATH`
 must be in a dedicated subdirectory of it. Managed templates must explicitly
@@ -88,6 +98,10 @@ relay forwarding with disposable age credentials and local RTMP sinks, and run
 headless Chromium interaction tests. No provider is contacted and CI does not
 deploy or publish runtime closures. Exact revisions and Nix result receipts are
 retained as workflow artifacts.
+
+The runtime gate also injects listener failures after successful preflight and
+during active local forwarding. It verifies failure exit status, teardown grace
+and ring-file cleanup without adding failure-injection switches to the application.
 
 The dual-relay gate forwards four independent landscape destinations and four
 independent portrait destinations concurrently. It checks all eight recordings'

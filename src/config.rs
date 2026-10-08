@@ -1531,6 +1531,21 @@ impl Settings {
         if self.buffer_mb < MIN_BUFFER_MB {
             errs.push(format!("buffer_mb must be at least {}", MIN_BUFFER_MB));
         }
+        if self.buffer_mb > MAX_BUFFER_MB {
+            errs.push(format!("buffer_mb must be at most {}", MAX_BUFFER_MB));
+        }
+        for (name, delay) in [
+            ("target_delay_ms", self.target_delay_ms),
+            ("armed_delay_ms", self.armed_delay_ms),
+            ("auto_arm_delay_ms", self.auto_arm_delay_ms),
+        ] {
+            if delay > 600_000 {
+                errs.push(format!("{name} must be at most 600000"));
+            }
+        }
+        if self.auto_arm_delay_ms == 0 {
+            errs.push("auto_arm_delay_ms must be > 0".into());
+        }
         // The ingest key travels as an RTMP stream key and is matched after the
         // playpath query is stripped (OBS appends `?clientConfigId=...` under
         // Enhanced Broadcasting). A key with a '?', whitespace, or other char an

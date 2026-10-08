@@ -469,12 +469,24 @@ fn main() -> std::io::Result<()> {
             std::future::pending::<()>().await;
         };
         let shutdown_reason: &str;
+        let mut supervisor_failed = false;
         // Default to Quit; only an explicit restart request flips this.
         let mut exit_kind = controller::ShutdownKind::Quit;
         tokio::select! {
-            _ = ingest_sup => { shutdown_reason = "ingest supervisor exited"; }
-            _ = egress_sup => { shutdown_reason = "egress supervisor exited"; }
-            _ = web_sup    => { shutdown_reason = "web supervisor exited"; }
+            result = ingest_sup => {
+                eprintln!("[ingest] supervisor ended: {result:?}");
+                supervisor_failed = true;
+                shutdown_reason = "ingest supervisor exited";
+            }
+            _ = egress_sup => {
+                supervisor_failed = true;
+                shutdown_reason = "egress supervisor exited";
+            }
+            result = web_sup => {
+                eprintln!("[web] supervisor ended: {result:?}");
+                supervisor_failed = true;
+                shutdown_reason = "web supervisor exited";
+            }
             _ = tokio::signal::ctrl_c() => { shutdown_reason = "ctrl-c"; }
             _ = terminate_signal => { shutdown_reason = "sigterm"; }
             kind = ctrl.wait_shutdown() => {
@@ -520,16 +532,30 @@ fn main() -> std::io::Result<()> {
         if let controller::ShutdownKind::Restart = exit_kind {
             self_update::restart_now();
         }
+        if supervisor_failed {
+            return Err(std::io::Error::other(shutdown_reason));
+        }
         Ok::<_, std::io::Error>(())
     })
 }
 
-async fn supervise_ingest(mut rx: watch::Receiver<Settings>, ctrl: Arc<controller::Controller>) {
+async fn supervise_ingest(
+    mut rx: watch::Receiver<Settings>,
+    ctrl: Arc<controller::Controller>,
+) -> std::io::Result<()> {
     let mut current = rx.borrow().ingest_addrs();
+    // Managed settings have one exact listener and cannot hot-rebind from the
+    // dashboard. Await it directly so a fatal leg reaches main's cleanup path.
+    if managed::enabled() {
+        let addr = current
+            .first()
+            .ok_or_else(|| std::io::Error::other("missing managed ingest address"))?;
+        return supervise_ingest_leg(addr.clone(), ctrl, true).await;
+    }
     let mut legs = spawn_ingest_legs(&current, &ctrl);
     loop {
         if rx.changed().await.is_err() {
-            return;
+            return Ok(());
         }
         let next = rx.borrow().ingest_addrs();
         if next == current {
@@ -560,7 +586,7 @@ async fn supervise_ingest(mut rx: watch::Receiver<Settings>, ctrl: Arc<controlle
 fn spawn_ingest_legs(
     addrs: &[String],
     ctrl: &Arc<controller::Controller>,
-) -> Vec<tokio::task::JoinHandle<()>> {
+) -> Vec<tokio::task::JoinHandle<std::io::Result<()>>> {
     addrs
         .iter()
         .enumerate()
@@ -589,13 +615,20 @@ const OPTIONAL_BIND_GRACE: Duration = Duration::from_secs(30);
 /// it immediately (that is the shape a machine with IPv6 disabled gives,
 /// where the bind can never succeed). Either way it says so once, in the
 /// dashboard log, and the task ends instead of looping in the background.
-async fn supervise_ingest_leg(addr: String, ctrl: Arc<controller::Controller>, required: bool) {
+async fn supervise_ingest_leg(
+    addr: String,
+    ctrl: Arc<controller::Controller>,
+    required: bool,
+) -> std::io::Result<()> {
     let mut deadline = std::time::Instant::now() + OPTIONAL_BIND_GRACE;
     loop {
         match rtmp::server::bind(&addr).await {
             Ok(listener) => {
                 if let Err(e) = rtmp::server::serve(listener, ctrl.clone()).await {
                     eprintln!("[ingest] {} stopped serving: {}", addr, e);
+                    if managed::enabled() {
+                        return Err(e);
+                    }
                 }
                 // It bound once, so the family works here: a listener that
                 // stops serving gets a fresh window to reclaim the address.
@@ -604,7 +637,7 @@ async fn supervise_ingest_leg(addr: String, ctrl: Arc<controller::Controller>, r
             Err(e) => {
                 if managed::enabled() {
                     eprintln!("InstantClone: configured ingest listener failed: {e}");
-                    std::process::exit(1);
+                    return Err(e);
                 }
                 let still_settling = e.kind() == std::io::ErrorKind::AddrInUse
                     && std::time::Instant::now() < deadline;
@@ -614,7 +647,7 @@ async fn supervise_ingest_leg(addr: String, ctrl: Arc<controller::Controller>, r
                         "ingest: IPv6 listener {addr} unavailable ({e}). IPv4 ingest is \
                          unaffected; only an OBS set to IP Family = IPv6 needs this one."
                     ));
-                    return;
+                    return Ok(());
                 }
                 eprintln!("[ingest] bind {} failed: {}", addr, e);
             }
@@ -1118,7 +1151,7 @@ async fn supervise_web(
     tx: Arc<watch::Sender<Settings>>,
     cfg_path: PathBuf,
     auth: Arc<auth::AuthState>,
-) {
+) -> std::io::Result<()> {
     let mut current_addr = rx.borrow().web_addr();
     let spawn_one = |addr: String| {
         tokio::spawn(web::run(
@@ -1134,12 +1167,18 @@ async fn supervise_web(
         tokio::select! {
             r = &mut handle => {
                 eprintln!("[web] task ended: {:?}", r);
-                if managed::enabled() { std::process::exit(1); }
+                if managed::enabled() {
+                    return match r {
+                        Ok(Err(error)) => Err(error),
+                        Ok(Ok(())) => Err(std::io::Error::other("managed web listener exited")),
+                        Err(error) => Err(std::io::Error::other(error)),
+                    };
+                }
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 handle = spawn_one(current_addr.clone());
             }
             ch = rx.changed() => {
-                if ch.is_err() { return; }
+                if ch.is_err() { return Ok(()); }
                 let new_addr = rx.borrow().web_addr();
                 if new_addr != current_addr {
                     eprintln!("[web] hot-restart {} → {}", current_addr, new_addr);

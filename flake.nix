@@ -18,10 +18,11 @@
       rust = package;
       runtime =
         pkgs.runCommand "instantclone-runtime" {
-          nativeBuildInputs = [pkgs.python3 pkgs.age pkgs.ffmpeg-headless];
+          nativeBuildInputs = [pkgs.python3 pkgs.age pkgs.ffmpeg-headless pkgs.stdenv.cc];
           packageDerivation = builtins.unsafeDiscardOutputDependency package.drvPath;
         } ''
           python ${./tests/managed/runtime.py} ${pkgs.lib.getExe package} ${template} "$packageDerivation"
+          python ${self}/tests/managed/listener_failure.py ${pkgs.lib.getExe package}
           touch "$out"
         '';
       runtime-dual =

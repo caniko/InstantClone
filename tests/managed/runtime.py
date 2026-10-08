@@ -114,16 +114,39 @@ def run(binary, store_template, package_derivation):
 
         try:
             original_template = template.read_text()
-            for setting, reason in [
+            declarations = [
                 ('web_port=0', b'web_port must be > 0'),
                 (f'web_port={ingest}', b'ingest_port and web_port must differ'),
                 ('buffer_mb=1', b'buffer_mb must be at least'),
+                ('buffer_mb=1048577', b'buffer_mb must be at most'),
+                ('target_delay_ms=600001', b'target_delay_ms'),
+                ('armed_delay_ms=600001', b'armed_delay_ms'),
+                ('auto_arm_delay_ms=0', b'auto_arm_delay_ms'),
+                ('auto_arm_delay_ms=600001', b'auto_arm_delay_ms'),
+                ('destination.1.id=local-0', b'duplicate destination id'),
+                ('destination.1.id=', b'explicit nonempty id required'),
+                ('destination.0.stream_key=plaintext-test-key', b'stream_key_file'),
+                ('destination.0.enabled=false\ndestination.0.stream_key=plaintext-test-key', b'stream_key_file'),
+                ('stream_key=plaintext-test-key', b'stream_key_file'),
+            ]
+            for url in [
+                'rtmp://user:plaintext-test-key@host/live', 'rtmp://host/live?key=plaintext-test-key',
+                'rtmp://host/live#fragment', 'rtmp://host/../live', 'rtmp://host:65536/live',
+                'rtmp://host:0/live', 'rtmp://host//live', 'rtmp://host/live//',
             ]:
+                declarations.append((f'destination.0.custom_egress_url={url}', b'server URL must be'))
+            for setting, reason in declarations:
                 template.write_text(original_template + setting + '\n')
                 result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime,
                                         capture_output=True, timeout=10, check=False)
                 assert result.returncode != 0 and reason in result.stderr, setting
                 assert not config.exists(), 'invalid declaration persisted a sanitized config'
+                assert b'plaintext-test-key' not in result.stderr, 'invalid declaration exposed credential'
+            template.write_text(original_template.replace('destination.0.id=local-0\n', ''))
+            result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime,
+                                    capture_output=True, timeout=10, check=False)
+            assert result.returncode != 0 and b'explicit nonempty id required' in result.stderr
+            assert not config.exists(), 'missing destination ID persisted a generated default'
             template.write_text(original_template)
             proc = start()
             assert config.stat().st_mode & 0o777 == 0o600

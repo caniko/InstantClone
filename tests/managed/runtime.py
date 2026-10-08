@@ -133,6 +133,9 @@ def run(binary, store_template, package_derivation):
                 ('stream_key=plaintext-test-key', b'stream_key_file'),
                 ('ingest_key=plaintext-test-key', b'ingest_key_file'),
             ]
+            for index in ['128', '18446744073709551616', '-1', 'not-a-number', '01']:
+                declarations.append((f'destination.{index}.enabled=true', b'invalid declared destination index'))
+            declarations.append(('destination.128.stream_key_file=/unavailable', b'invalid declared destination index'))
             for field in [
                 'configured', 'ingest_bind_all', 'web_bind_all', 'tracing_enabled',
                 'auto_arm_on_connect', 'auto_activate_when_ready', 'update_check_enabled',
@@ -204,7 +207,7 @@ def run(binary, store_template, package_derivation):
             publisher = subprocess.Popen([
                 'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-re',
                 '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=10', '-f', 'lavfi',
-                '-i', 'sine=frequency=1000:sample_rate=44100', '-t', '45',
+                '-i', 'sine=frequency=1000:sample_rate=44100',
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-g', '10',
                 '-c:a', 'aac', '-f', 'flv', f'rtmp://127.0.0.1:{ingest}/live/{ingest_key}',
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -223,6 +226,7 @@ def run(binary, store_template, package_derivation):
             log.close()
             children.append(again)
             wait(lambda: (root / 'reconnected.flv').exists() and (root / 'reconnected.flv').stat().st_size > 10000, 15)
+            assert publisher.poll() is None, 'publisher ended before forwarding/reconnect assertions'
             # A systemd stop uses SIGTERM while the relay is actively forwarding.
             assert (root / 'cache/stream.buf').exists()
             proc.send_signal(signal.SIGTERM)

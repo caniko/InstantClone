@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 /// would otherwise drive `Vec::push` billions of times before the field
 /// even applies, OOMing the process. 128 destinations and 256 profiles
 /// are both already absurd for a single streamer.
-const MAX_DESTINATIONS: usize = 128;
+pub(crate) const MAX_DESTINATIONS: usize = 128;
 const MAX_PROFILES: usize = 256;
 /// Ceiling on saved dock layouts (each is one OBS browser dock's widget
 /// arrangement). Persisted server-side so a layout survives OBS clearing

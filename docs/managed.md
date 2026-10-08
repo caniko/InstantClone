@@ -12,6 +12,8 @@ decrypted credentials using `destination.N.stream_key_file` and optionally
 numbers, `-` and `_`. Plaintext is read only at process startup. Direct
 `ingest_key` and `stream_key` fields are rejected, including legacy and disabled entries.
 Each enabled destination requires an explicit, nonempty, unique `destination.N.id`.
+Destination indexes must be canonical decimal integers from `0` through `127`;
+out-of-range or malformed indexes fail before credential reads or state creation.
 Configuration and application lifecycle changes belong to the service manager.
 
 Server URLs may have multi-segment application paths; managed mode always appends
@@ -121,8 +123,9 @@ independent portrait destinations concurrently. It checks all eight recordings'
 dimensions, continued growth of every portrait sink while landscape is stopped,
 and fresh decoded frames at all four landscape sinks after restart. This proves
 local fan-out and restart isolation; provider/account acceptance is a separate gate.
-Both test publishers remain alive until the assertions finish and are explicitly
-stopped during cleanup, so startup/reconnect budgets cannot expire the portrait input.
+All managed qualification publishers remain alive until their assertions finish
+and are explicitly stopped during cleanup. Startup, reconnect and browser budgets
+cannot expire an input before its media/authentication assertions.
 
 `managed-security` additionally exercises real HTTP login/logout, anonymous and
 invalid credential rejection, protected self/peer bridging, private-file guards,

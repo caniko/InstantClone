@@ -253,6 +253,17 @@ pub fn prepare() -> io::Result<()> {
     // The standalone parser recovers malformed numbers by retaining defaults.
     // Declarative startup must reject these before parsing or reading credentials.
     for (key, value) in &fields {
+        if let Some(destination) = key.strip_prefix("destination.") {
+            let valid_index = destination.split_once('.').is_some_and(|(index, field)| {
+                !field.is_empty()
+                    && index.parse::<usize>().ok().is_some_and(|number| {
+                        number < crate::config::MAX_DESTINATIONS && index == number.to_string()
+                    })
+            });
+            if !valid_index {
+                return Err(invalid("InstantClone: invalid declared destination index"));
+            }
+        }
         let valid = match *key {
             "ingest_port" | "web_port" => value.parse::<u16>().is_ok(),
             "buffer_mb" => value.parse::<u64>().is_ok(),

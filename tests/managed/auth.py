@@ -144,13 +144,15 @@ def run(binary, chromium=None, screenshot=None):
             token_files[1].write_text(tokens[1])
             token_files[1].chmod(0o600)
 
+            publishers = []
             for ingest, size, key in [(ingest_h,'160x90',ingest_keys[0]),(ingest_v,'90x160',ingest_keys[1])]:
                 publisher = subprocess.Popen([
                     'ffmpeg','-nostdin','-v','error','-re','-f','lavfi','-i',f'testsrc2=size={size}:rate=10',
-                    '-t','60','-c:v','libx264','-preset','ultrafast','-tune','zerolatency','-g','10',
+                    '-c:v','libx264','-preset','ultrafast','-tune','zerolatency','-g','10',
                     '-f','flv',f'rtmp://127.0.0.1:{ingest}/live/{key}',
                 ],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                 children.append(publisher)
+                publishers.append(publisher)
             def state(program):
                 status, body, _ = request(web_h,f'/desk/{program}/state',cookie=cookie)
                 assert status == 200
@@ -164,6 +166,7 @@ def run(binary, chromium=None, screenshot=None):
             assert request(web_h,'/desk/portrait/disarm',body='',cookie=cookie)[0] == 200
             if chromium:
                 browser_check(chromium,root,f'http://127.0.0.1:{web_h}',tokens[0],screenshot,token_files[1],tokens[1])
+            assert all(publisher.poll() is None for publisher in publishers), 'publisher ended before authentication/browser assertions'
             for file in root.glob('relay-*.log'):
                 assert all(token not in file.read_text() for token in tokens), 'control token leaked into logs'
             print('PASS: managed login, dock tokens, protected peer bridge, revoked sessions and action isolation')

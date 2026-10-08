@@ -85,12 +85,22 @@ def run(binary, chromium=None, screenshot=None):
                 }
                 if index == 0:
                     original = template.read_text()
-                    template.write_text(original.replace(f'dock_token_file={token_files[index]}\n', ''))
-                    result = subprocess.run([binary, '--no-browser'], env=env, cwd=root,
-                                            capture_output=True, timeout=10, check=False)
-                    assert result.returncode != 0 and b'dock_token_file' in result.stderr
-                    assert not Path(env['CONFIG_PATH']).exists(), 'incomplete authentication pairing persisted'
-                    assert all(value.encode() not in result.stderr for value in tokens + ingest_keys)
+                    declarations = [
+                        (original.replace(f'dock_token_file={token_files[index]}\n', ''), 'dock_token_file'),
+                    ]
+                    for key, value in [('dock_token', 'a'), ('dashboard_password_hash', password_hash)]:
+                        for credential in [value, '']:
+                            inline = f'{key}={credential}\n'
+                            declarations.extend([(original + inline, f'{key}_file'),
+                                                 (inline + original, f'{key}_file')])
+                    for invalid_template, reason in declarations:
+                        template.write_text(invalid_template)
+                        result = subprocess.run([binary, '--no-browser'], env=env, cwd=root,
+                                                capture_output=True, timeout=10, check=False)
+                        assert result.returncode != 0 and reason.encode() in result.stderr
+                        assert not Path(env['CONFIG_PATH']).exists(), 'invalid credentials persisted'
+                        assert all(value.encode() not in result.stderr
+                                   for value in tokens + ingest_keys + [password_hash])
                     template.write_text(original)
                 with (root / f'relay-{index}.log').open('wb') as log:
                     child = subprocess.Popen([binary,'--no-browser'],env=env,cwd=root,stdout=log,stderr=log)

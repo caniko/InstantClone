@@ -236,10 +236,14 @@ pub fn prepare() -> io::Result<()> {
             "InstantClone: managed templates require ingest_key_file instead of a plaintext ingest key",
         ));
     }
-    if (fields.contains_key("dashboard_password_hash_file")
-        || fields
-            .get("dashboard_password_hash")
-            .is_some_and(|hash| !hash.is_empty()))
+    for key in ["dock_token", "dashboard_password_hash"] {
+        if fields.contains_key(key) {
+            return Err(invalid(&format!(
+                "InstantClone: managed templates require {key}_file instead of inline control credentials"
+            )));
+        }
+    }
+    if fields.contains_key("dashboard_password_hash_file")
         && !fields.contains_key("dock_token_file")
     {
         return Err(invalid(

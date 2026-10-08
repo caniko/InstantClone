@@ -63,6 +63,9 @@ format is `pbkdf2-sha256$ITERATIONS$SALT_HEX$DIGEST_HEX`, with a 16-byte salt,
 auth configuration mutations remain owned by the service manager.
 Password-protected programs must also declare `dock_token_file`; incomplete
 authentication/control-token pairing fails before persisting runtime settings.
+Direct `dock_token` and `dashboard_password_hash` fields are rejected, even when
+empty or declared alongside a credential-file directive in either order. Only
+validated file credentials can supply the runtime authentication values.
 
 Give each program a distinct 16–128-character hex control token, stored in a
 private user-owned file (mode `0400` or `0600`). Set

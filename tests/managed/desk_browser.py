@@ -53,6 +53,15 @@ setTimeout(async()=>{
     const selection=window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
     const selectedText=selection.toString();
     assert(selectedText.includes('rtmp://127.0.0.1:1935/live'),'Setup address unavailable to copy');
+    states.landscape.ingest_alive=false;
+    states.landscape.phase='active';
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    const control=action=>document.querySelector(`[data-action="${action}"]`);
+    assert(!control('stop').disabled && !control('cancel-cut').disabled,'Active recovery disabled after ingest loss');
+    assert(control('arm').disabled && control('activate').disabled && control('cut-after').disabled,'Media action enabled without ingest');
+    states.landscape.phase='ready';
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    assert(!control('disarm').disabled,'Prepared recovery disabled after ingest loss');
     portraitOffline=true;
     await new Promise(resolve=>setTimeout(resolve,1500));
     document.querySelector('#scope').value='portrait';
@@ -84,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='desk-browser-') as tmp:
     command = [sys.argv[1], '--headless', '--no-sandbox', '--disable-gpu',
                '--no-first-run', '--disable-background-networking',
                '--user-data-dir=' + str(Path(tmp) / 'profile'),
-               '--window-size=360,900', '--virtual-time-budget=5000', '--dump-dom']
+               '--window-size=360,900', '--virtual-time-budget=9000', '--dump-dom']
     if len(sys.argv) > 2:
         command.append('--screenshot=' + str(Path(sys.argv[2]).resolve()))
     result = subprocess.run(command + [page.as_uri()], env=environment,

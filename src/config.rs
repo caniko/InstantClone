@@ -792,8 +792,15 @@ impl Settings {
         Ok(Self::from_text(&fs::read_to_string(path)?))
     }
 
-    /// Parse the same file format before managed startup persists it.
     pub(crate) fn from_text(text: &str) -> Self {
+        let mut s = Self::from_text_unclamped(text);
+        // Standalone hand-edited configuration retains its load-time recovery.
+        s.sanitize_load();
+        s
+    }
+
+    /// Preserve declared values so managed startup can reject invalid settings.
+    pub(crate) fn from_text_unclamped(text: &str) -> Self {
         let mut s = Self::defaults();
         // Both lists are file-authoritative - a user who deletes them all
         // must see them stay deleted across restarts.
@@ -835,10 +842,6 @@ impl Settings {
                 audio_track: "auto".into(),
             });
         }
-        // Clamp / sanitize on load - hand-edited values can otherwise
-        // hit divide-by-zero (buffer_mb=0 → `% capacity` in DiskRing) or
-        // bind two services to the same port (one will silently fail).
-        s.sanitize_load();
         s
     }
 

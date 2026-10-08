@@ -324,7 +324,7 @@ pub fn prepare() -> io::Result<()> {
         rendered.push_str(line);
         rendered.push('\n');
     }
-    let settings = crate::config::Settings::from_text(&rendered);
+    let settings = crate::config::Settings::from_text_unclamped(&rendered);
     // Managed URLs contain only the server application. They never embed a key,
     // so every enabled provider needs its separately provisioned credential.
     for destination in &settings.destinations {
@@ -487,16 +487,38 @@ pub async fn desk_request(
         String::from_utf8(bytes).map_err(|_| invalid("invalid relay response"))
     }).await;
     match result {
-        Ok(Ok(response)) if response.starts_with("HTTP/1.1 200 ") => {
-            match response.split_once("\r\n\r\n") {
-                Some((_, json)) => ("200 OK", json.into()),
-                None => unavailable(),
-            }
-        }
-        Ok(Ok(response)) if response.starts_with("HTTP/1.1 401 ") || response.starts_with("HTTP/1.1 403 ") => ("401 Unauthorized", r#"{"ok":false,"error":"Program authentication required; check its control credential."}"#.into()),
-        Ok(Ok(_)) => ("409 Conflict", r#"{"ok":false,"error":"Relay rejected the action; refresh its state before retrying."}"#.into()),
+        Ok(Ok(response)) => desk_response(&response),
         _ => unavailable(),
     }
+}
+
+fn desk_response(response: &str) -> (&'static str, String) {
+    let unavailable = || {
+        (
+            "503 Service Unavailable",
+            r#"{"ok":false,"error":"Relay unavailable; check its user service."}"#.into(),
+        )
+    };
+    let Some((headers, body)) = response.split_once("\r\n\r\n") else {
+        return unavailable();
+    };
+    // This is a bounded response from a configured fixed-loopback control
+    // endpoint. Keep its JSON reason and known status rather than replacing a
+    // buffer/phase rejection with advice that cannot resolve it.
+    let status = match headers.lines().next().and_then(|line| line.split_whitespace().nth(1)) {
+        Some("200") => "200 OK",
+        Some("400") => "400 Bad Request",
+        Some("404") => "404 Not Found",
+        Some("409") => "409 Conflict",
+        Some("500") => "500 Internal Server Error",
+        Some("503") => "503 Service Unavailable",
+        Some("401" | "403") => return (
+            "401 Unauthorized",
+            r#"{"ok":false,"error":"Program authentication required; check its control credential."}"#.into(),
+        ),
+        _ => return unavailable(),
+    };
+    (status, body.into())
 }
 
 /// Keep delay controls, private overlay files and docks usable. Configuration,

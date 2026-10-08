@@ -101,6 +101,9 @@ def run(binary, chromium=None, screenshot=None):
             assert status == 200 and session and 'HttpOnly' in session
             session_cookie = session.split(';')[0]
             assert request(web_h,'/desk/portrait/state',cookie=session_cookie)[0] == 200
+            status, body, _ = request(web_h,'/config',cookie=session_cookie)
+            assert status == 200 and all(secret not in body for secret in tokens + ingest_keys)
+            assert json.loads(body)['ingest_key'] == '' and json.loads(body)['dock_token'] == ''
             assert request(web_h,'/logout',body='',cookie=session_cookie)[0] == 200
             assert request(web_h,'/desk/info',cookie=session_cookie)[0] == 401, 'revoked session still authorized'
 
@@ -130,6 +133,8 @@ def run(binary, chromium=None, screenshot=None):
                 assert status == 200
                 return json.loads(body)
             wait(lambda: state('landscape')['ingest_alive'] and state('portrait')['ingest_alive'])
+            status, body, _ = request(web_h,'/desk/portrait/arm',body='ms=600000',cookie=cookie)
+            assert status == 409 and 'Buffer too small' in json.loads(body)['error'], body
             status, body, _ = request(web_h,'/desk/portrait/arm',body='ms=5000',cookie=cookie)
             assert status == 200 and json.loads(body)['armed_delay_ms'] == 5000
             assert state('landscape')['armed_delay_ms'] == 0, 'portrait action changed landscape'

@@ -107,7 +107,7 @@ if (typeof document !== 'undefined') {
       button.hidden = !live || (action==='arm' && phase!=='idle') || (action==='activate' && phase!=='ready') || (action==='disarm' && !['ready','preparing'].includes(phase)) || (['stop','cut-after'].includes(action) && phase!=='active');
       if (action==='cancel-cut') button.hidden=!live || !p.state.safe_cut_pending;
       if (action==='cut-after' && p.state?.safe_cut_pending) button.hidden=true;
-      button.disabled = busy || !live || !p.state.ingest_alive || (action==='activate' && phase!=='ready') || (action==='disarm' && !['ready','preparing'].includes(phase)) || (['stop','cut-after'].includes(action) && phase!=='active') || (action==='arm' && phase!=='idle');
+      button.disabled = busy || !live || (['arm','activate','cut-after'].includes(action) && !p.state.ingest_alive) || (action==='activate' && phase!=='ready') || (action==='disarm' && !['ready','preparing'].includes(phase)) || (['stop','cut-after'].includes(action) && phase!=='active') || (action==='arm' && phase!=='idle');
     }
   }
   async function poll() {

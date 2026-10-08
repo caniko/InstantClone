@@ -452,6 +452,22 @@ fn main() -> std::io::Result<()> {
             auth.clone(),
         ));
 
+        #[cfg(unix)]
+        let mut terminate = if managed::enabled() {
+            Some(tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            )?)
+        } else {
+            None
+        };
+        let terminate_signal = async {
+            #[cfg(unix)]
+            if let Some(signal) = terminate.as_mut() {
+                signal.recv().await;
+                return;
+            }
+            std::future::pending::<()>().await;
+        };
         let shutdown_reason: &str;
         // Default to Quit; only an explicit restart request flips this.
         let mut exit_kind = controller::ShutdownKind::Quit;
@@ -460,6 +476,7 @@ fn main() -> std::io::Result<()> {
             _ = egress_sup => { shutdown_reason = "egress supervisor exited"; }
             _ = web_sup    => { shutdown_reason = "web supervisor exited"; }
             _ = tokio::signal::ctrl_c() => { shutdown_reason = "ctrl-c"; }
+            _ = terminate_signal => { shutdown_reason = "sigterm"; }
             kind = ctrl.wait_shutdown() => {
                 exit_kind = kind;
                 shutdown_reason = match kind {

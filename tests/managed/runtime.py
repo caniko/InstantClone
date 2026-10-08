@@ -50,6 +50,10 @@ def run(binary, store_template, package_derivation):
         template = root / 'template'
         ingest, web, receiver_a, receiver_b = [port() for _ in range(4)]
         keys = [secrets.token_hex(24), secrets.token_hex(24)]
+        ingest_key, control_token = secrets.token_hex(24), secrets.token_hex(32)
+        control_file = root / 'control.token'
+        control_file.write_text(control_token + '\n')
+        control_file.chmod(0o600)
         key_paths = [root / 'a.key', root / 'b.key']
         # Real age encryption/decryption, using disposable test-only identities.
         identity = root / 'identity'
@@ -68,6 +72,7 @@ def run(binary, store_template, package_derivation):
         subprocess.run(['age', '-d', '-i', str(identity), '-o', str(server_path), str(encrypted_server)], check=True)
         base = [
             'configured=true', f'ingest_port={ingest}', 'ingest_bind_all=false',
+            f'ingest_key={ingest_key}', f'dock_token_file={control_file}',
             f'web_port={web}', 'web_bind_all=false', 'buffer_mb=50',
             f'buffer_path={root}/cache/stream.buf', f'overlays_dir={root}/state/overlays',
             'tracing_enabled=false', 'update_check_enabled=false', 'open_dashboard_on_launch=false',
@@ -108,6 +113,18 @@ def run(binary, store_template, package_derivation):
                 return error.code, error.read()
 
         try:
+            original_template = template.read_text()
+            for setting, reason in [
+                ('web_port=0', b'web_port must be > 0'),
+                (f'web_port={ingest}', b'ingest_port and web_port must differ'),
+                ('buffer_mb=1', b'buffer_mb must be at least'),
+            ]:
+                template.write_text(original_template + setting + '\n')
+                result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime,
+                                        capture_output=True, timeout=10, check=False)
+                assert result.returncode != 0 and reason in result.stderr, setting
+                assert not config.exists(), 'invalid declaration persisted a sanitized config'
+            template.write_text(original_template)
             proc = start()
             assert config.stat().st_mode & 0o777 == 0o600
             assert config.parent.stat().st_mode & 0o777 == 0o700
@@ -132,6 +149,7 @@ def run(binary, store_template, package_derivation):
             for path in ['/state', '/config', '/destinations', '/logs']:
                 body = request(path)[1]
                 assert all(key.encode() not in body for key in keys)
+                assert ingest_key.encode() not in body and control_token.encode() not in body, path
                 assert server_url.encode() not in body, path
             command = Path(f'/proc/{proc.pid}/cmdline').read_bytes()
             assert all(key.encode() not in command for key in keys)
@@ -152,7 +170,7 @@ def run(binary, store_template, package_derivation):
                 '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=10', '-f', 'lavfi',
                 '-i', 'sine=frequency=1000:sample_rate=44100', '-t', '45',
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-g', '10',
-                '-c:a', 'aac', '-f', 'flv', f'rtmp://127.0.0.1:{ingest}/live/local',
+                '-c:a', 'aac', '-f', 'flv', f'rtmp://127.0.0.1:{ingest}/live/{ingest_key}',
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             children.append(publisher)
             def received(i):
@@ -169,10 +187,14 @@ def run(binary, store_template, package_derivation):
             log.close()
             children.append(again)
             wait(lambda: (root / 'reconnected.flv').exists() and (root / 'reconnected.flv').stat().st_size > 10000, 15)
-            stop(publisher)
-            stop(proc)
+            # A systemd stop uses SIGTERM while the relay is actively forwarding.
+            assert (root / 'cache/stream.buf').exists()
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=10)
             assert proc.returncode == 0
             assert not (root / 'cache/stream.buf').exists()
+            assert b'Shutting down (sigterm)' in logs.read_bytes()
+            stop(publisher)
             # Runtime edits are discarded, and fresh secret bytes read on restart.
             rotated = secrets.token_urlsafe(3)
             keys.append(rotated)
@@ -218,7 +240,7 @@ def run(binary, store_template, package_derivation):
                 assert all(key.encode() not in data for key in keys), 'secret leakage detected'
             assert server_url.encode() not in logs.read_bytes(), 'secret server URL leaked to journal'
             assert f'127.0.0.1:{receiver_b}'.encode() not in logs.read_bytes(), 'secret endpoint leaked to journal'
-            print('PASS: runtime secrets, exact binds, dashboard, restart, rotation, port collisions, two local RTMP receivers and reconnect')
+            print('PASS: strict declarations, runtime secrets, exact binds, dashboard, SIGTERM cleanup, restart, rotation, port collisions, two local RTMP receivers and reconnect')
         finally:
             for child in reversed(children):
                 stop(child)

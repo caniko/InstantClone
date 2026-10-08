@@ -803,11 +803,12 @@ async fn route(
         ("GET", "/config") => (
             "200 OK",
             "application/json",
-            // A dock-token caller (is_admin == false) gets the config with the
-            // raw ingest key and dock token blanked; a full session gets them.
-            settings
-                .borrow()
-                .to_json(crate::autostart::is_enabled(), is_admin),
+            // Service-provisioned credentials stay private in managed mode,
+            // including anonymous dashboards and administrator sessions.
+            settings.borrow().to_json(
+                crate::autostart::is_enabled(),
+                is_admin && !crate::managed::enabled(),
+            ),
         ),
         ("GET", "/docks") => dock_list_json(settings),
         ("GET", "/platforms") => ("200 OK", "application/json", platforms_json()),

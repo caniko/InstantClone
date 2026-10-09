@@ -256,6 +256,18 @@ pub fn prepare() -> io::Result<()> {
             "InstantClone: dashboard authentication requires dock_token_file for program control",
         ));
     }
+    // Settings uses custom server metadata only for enabled Custom/Kick
+    // destinations. The serializer also emits empty fields for other platforms.
+    let uses_custom_url = |prefix: &str| {
+        fields.get(format!("{prefix}.enabled").as_str()).copied() != Some("false")
+            && matches!(
+                fields
+                    .get(format!("{prefix}.platform").as_str())
+                    .copied()
+                    .unwrap_or("twitch"),
+                "custom" | "kick"
+            )
+    };
     // The standalone parser recovers malformed numbers by retaining defaults.
     // Declarative startup must reject these before parsing or reading credentials.
     for (key, value) in &fields {
@@ -299,17 +311,19 @@ pub fn prepare() -> io::Result<()> {
             return Err(invalid(&format!("InstantClone: invalid declared {key}")));
         }
         if let Some(prefix) = key.strip_suffix(".custom_egress_url") {
-            validate_server_url(
-                value,
-                fields
-                    .get(format!("{prefix}.name").as_str())
-                    .copied()
-                    .unwrap_or("unnamed"),
-                fields
-                    .get(format!("{prefix}.platform").as_str())
-                    .copied()
-                    .unwrap_or("custom"),
-            )?;
+            if uses_custom_url(prefix) {
+                validate_server_url(
+                    value,
+                    fields
+                        .get(format!("{prefix}.name").as_str())
+                        .copied()
+                        .unwrap_or("unnamed"),
+                    fields
+                        .get(format!("{prefix}.platform").as_str())
+                        .copied()
+                        .unwrap_or("custom"),
+                )?;
+            }
         }
     }
     let mut directories = vec![path
@@ -401,6 +415,16 @@ pub fn prepare() -> io::Result<()> {
                 }
                 rendered.push_str(&format!("dashboard_password_hash={hash}\n"));
                 continue;
+            }
+            // Omit unused inline/file URLs so stale platform metadata is neither
+            // validated nor read/rendered as a runtime credential.
+            if let Some(prefix) = key
+                .strip_suffix(".custom_egress_url")
+                .or_else(|| key.strip_suffix(".custom_egress_url_file"))
+            {
+                if !uses_custom_url(prefix) {
+                    continue;
+                }
             }
             // Last declaration wins, as in Settings. A disabled destination may
             // retain file references after its credentials have been retired.

@@ -74,6 +74,11 @@ Disabled destinations may retain `stream_key_file` and `custom_egress_url_file`
 references after those credentials are removed. The final `enabled=false`
 declaration skips both file reads and credential rendering, regardless of line
 order. Re-enabling the destination requires its credentials again.
+Custom server URLs are used only by enabled `custom` or `kick` destinations.
+Unused `custom_egress_url` and `custom_egress_url_file` fields are omitted from
+runtime rendering, including the serializer's empty fields for other platforms
+and obsolete URLs on retired destinations. Active Custom/Kick endpoints retain
+strict server-URL validation.
 Discord notifications use `discord_webhook_url_file`, pointing at a private
 user-owned file containing the HTTPS webhook URL. Direct `discord_webhook_url`
 declarations are rejected, including empty fields. The URL is rendered only into

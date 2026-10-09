@@ -2,6 +2,7 @@
 import http.client
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,58 @@ def disabled_credentials(binary, root, runtime):
             assert result.returncode != 0 and b'secret is missing or unreadable' in result.stderr
             assert config.read_text() == rendered, 'failed re-enable overwrote the valid runtime config'
     print('PASS: final disabled destinations omit retained credentials regardless of declaration order; re-enable requires secrets')
+
+
+def unused_custom_urls(binary, root, runtime):
+    key = root / 'url-test.key'
+    key.write_text('disposable-platform-key')
+    template = root / 'url-template'
+    cases = [
+        ('twitch', True, ''), ('youtube', True, ''), ('sink', True, ''),
+        ('twitch', True, 'obsolete-endpoint'), (None, True, ''),
+        ('custom', False, ''), ('custom', False, 'obsolete-endpoint'),
+        ('kick', False, 'obsolete-endpoint'),
+        ('custom', True, ''), ('kick', True, ''),
+        ('custom', True, 'rtmp://user:disposable-platform-key@host/live'),
+    ]
+    for index, (platform, enabled, url) in enumerate(cases):
+        config = runtime / f'url-instance-{index}/config'
+        with socket.socket() as occupied:
+            occupied.bind(('127.0.0.1', 0))
+            occupied.listen()
+            ingest = occupied.getsockname()[1]
+            # Stop at the real ingest preflight after template preparation,
+            # before any runtime/egress/provider activity can start.
+            text = (f'configured=true\ningest_port={ingest}\nweb_port={port()}\n'
+                    f'buffer_path={root}/url-cache/stream.buf\noverlays_dir={root}/url-overlays\n'
+                    'buffer_mb=50\ningest_bind_all=false\nweb_bind_all=false\n'
+                    'tracing_enabled=false\nupdate_check_enabled=false\nopen_dashboard_on_launch=false\n'
+                    'destination.0.name=Platform\ndestination.0.id=platform\n'
+                    'destination.0.enabled=true\n'
+                    + ('destination.0.platform=custom\n' if platform else '')
+                    + f'destination.0.stream_key_file={key}\n'
+                    f'destination.0.custom_egress_url={url}\n'
+                    + (f'destination.0.platform={platform}\n' if platform else '')
+                    + f'destination.0.enabled={str(enabled).lower()}\n')
+            uses_url = enabled and platform in ['custom', 'kick']
+            if not uses_url:
+                text += f'destination.0.custom_egress_url_file={root}/unavailable-server\n'
+            template.write_text(text)
+            env = os.environ | {'INSTANTCLONE_MANAGED':'1','INSTANTCLONE_TEMPLATE':str(template),
+                                'XDG_RUNTIME_DIR':str(runtime),'CONFIG_PATH':str(config)}
+            result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
+            assert result.returncode != 0
+            if uses_url:
+                assert b'server URL must be' in result.stderr, (platform, url)
+                assert not config.exists(), 'active custom URL failure persisted settings'
+            else:
+                assert b'configured ingest port is unavailable' in result.stderr, (platform, url, result.stderr)
+                assert config.exists(), 'unused custom URL prevented template preparation'
+                rendered = config.read_text()
+                assert 'destination.0.custom_egress_url' not in rendered
+                assert 'obsolete-endpoint' not in rendered
+            assert b'disposable-platform-key' not in result.stderr, 'URL validation echoed credentials'
+    print('PASS: unused/disabled custom URL metadata is omitted; active custom/Kick URL validation remains strict without provider contact')
 
 
 def run(binary):
@@ -156,6 +209,7 @@ def run(binary):
             stop(proc)
         print('PASS: disabled managed metadata starts without keys or an egress connection')
         disabled_credentials(binary, root, runtime)
+        unused_custom_urls(binary, root, runtime)
 
 
 if __name__ == '__main__':

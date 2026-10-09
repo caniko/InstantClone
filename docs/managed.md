@@ -57,6 +57,12 @@ names a public JSON file such as:
 
 ### Protected desks
 
+Credentialed peer bridging requires dashboard authentication on the host relay.
+A dock token alone does not activate that authentication gate. An unprotected
+host refuses to read or forward peer token files; protecting the host restores
+bridging for authenticated callers. Uncredentialed self-relay controls remain
+available according to the relay's own authentication policy.
+
 Upstream password authentication remains optional. For a protected service, put
 its PBKDF2 hash in a private user-owned file and use
 `dashboard_password_hash_file=/path/to/password-hash` in the template. The hash
@@ -80,9 +86,12 @@ unavailable final credential still fails preparation and preserves the previous
 runtime configuration.
 For Custom/Kick endpoints, inline `custom_egress_url` and credential-backed
 `custom_egress_url_file` declarations share one logical field: only the final
-source is read, validated and rendered. Local `sink` destinations also omit
-retained stream-key file references even when enabled; switching back to a
-provider requires its stream-key credential again.
+source is read, validated and rendered. Enabled built-in `sink` destinations are
+rejected in managed mode before credential reads or state creation because their
+fixed child ports do not isolate multiple relays. Use a Custom loopback receiver
+with instance-owned ports for local managed testing. Standalone sinks retain their
+existing behavior; disabled managed destinations can retain retired credentials.
+Switching to an enabled provider requires its stream-key credential again.
 Custom server URLs are used only by enabled `custom` or `kick` destinations.
 Unused `custom_egress_url` and `custom_egress_url_file` fields are omitted from
 runtime rendering, including the serializer's empty fields for other platforms

@@ -322,6 +322,18 @@ pub fn prepare() -> io::Result<()> {
         if !valid {
             return Err(invalid(&format!("InstantClone: invalid declared {key}")));
         }
+        if let Some(prefix) = key.strip_suffix(".platform") {
+            if key.starts_with("destination.")
+                && *value == "sink"
+                && fields.get(format!("{prefix}.enabled").as_str()).copied() != Some("false")
+            {
+                // The built-in sink child owns process-global fixed ports. It
+                // cannot safely serve multiple managed relays in one namespace.
+                return Err(invalid(
+                    "InstantClone: managed local sinks require isolated ports; use an instance-owned Custom loopback receiver",
+                ));
+            }
+        }
     }
     let mut directories = vec![path
         .parent()
@@ -654,6 +666,16 @@ pub async fn desk_request(
         } else if let Ok(file) =
             std::env::var(format!("{}_TOKEN_FILE", variable.trim_end_matches("_PORT")))
         {
+            // The web auth gate is inactive without a password hash, even when
+            // this relay has a dock token. Never lend a peer's private authority
+            // to callers who did not pass an active host authentication gate.
+            if settings.dashboard_password_hash.is_empty() {
+                return (
+                    "401 Unauthorized",
+                    r#"{"ok":false,"error":"Host relay authentication required for peer control."}"#
+                        .into(),
+                );
+            }
             match control_token_file(Path::new(&file)) {
                 Ok(token) => token,
                 Err(_) => return (

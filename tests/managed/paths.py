@@ -113,7 +113,10 @@ def unused_custom_urls(binary, root, runtime):
                                 'XDG_RUNTIME_DIR':str(runtime),'CONFIG_PATH':str(config)}
             result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
             assert result.returncode != 0
-            if uses_url:
+            if platform == 'sink' and enabled:
+                assert b'managed local sinks require isolated ports' in result.stderr
+                assert not config.exists(), 'non-isolated sink persisted settings'
+            elif uses_url:
                 assert b'server URL must be' in result.stderr, (platform, url)
                 assert not config.exists(), 'active custom URL failure persisted settings'
             else:
@@ -254,20 +257,22 @@ def sink_credentials(binary, root, runtime):
                 credential = f'destination.0.stream_key_file={stale}\n'
                 text = header + (sink + credential if declarations == 'before' else credential + sink)
                 template.write_text(text)
+                prior = config.read_text() if config.exists() else None
                 result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
-                assert result.returncode != 0 and b'configured ingest port is unavailable' in result.stderr, result.stderr
-                rendered = config.read_text()
-                assert 'destination.0.stream_key' not in rendered and valid.read_text() not in rendered
+                assert result.returncode != 0 and b'managed local sinks require isolated ports' in result.stderr, result.stderr
+                assert (config.read_text() if config.exists() else None) == prior, 'non-isolated sink changed runtime settings'
+                if prior is None:
+                    assert not (root / 'sink-cache').exists() and not (root / 'sink-overlays').exists()
                 template.write_text(text + 'destination.0.platform=custom\ndestination.0.custom_egress_url=rtmp://127.0.0.1:1/live\n')
                 result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
                 if stale != valid:
                     assert result.returncode != 0 and b'configured ingest port is unavailable' not in result.stderr
-                    assert config.read_text() == rendered, 'missing/malformed provider key replaced sink config'
+                    assert (config.read_text() if config.exists() else None) == prior, 'missing/malformed provider key changed runtime config'
                 else:
                     assert result.returncode != 0 and b'configured ingest port is unavailable' in result.stderr
                     assert f'destination.0.stream_key={valid.read_text()}\n' in config.read_text()
                 assert valid.read_bytes() not in result.stderr
-    print('PASS: enabled sinks skip retired stream-key files regardless of order; provider switches require credentials')
+    print('PASS: managed sinks reject before credential reads or state mutation; final provider configurations require credentials')
 
 
 def run(binary):

@@ -11,8 +11,8 @@ import secrets
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
+
 from runtime_dual import port, stop, wait
 
 
@@ -105,7 +105,7 @@ def run(binary, chromium=None, screenshot=None):
                 with (root / f'relay-{index}.log').open('wb') as log:
                     child = subprocess.Popen([binary,'--no-browser'],env=env,cwd=root,stdout=log,stderr=log)
                 children.append(child)
-                wait(lambda: child.poll() is not None or request(web,'/state')[0] == 401)
+                wait(lambda child=child, web=web: child.poll() is not None or request(web,'/state')[0] == 401)
                 assert child.poll() is None, 'managed relay exited during startup'
 
             cookie = f'ic_dock={tokens[0]}'
@@ -164,6 +164,7 @@ def run(binary, chromium=None, screenshot=None):
             assert status == 200 and json.loads(body)['armed_delay_ms'] == 5000
             assert state('landscape')['armed_delay_ms'] == 0, 'portrait action changed landscape'
             assert request(web_h,'/desk/portrait/disarm',body='',cookie=cookie)[0] == 200
+            mixed_authentication(binary, root, runtime, request, web_v, token_files, password_file)
             if chromium:
                 browser_check(chromium,root,f'http://127.0.0.1:{web_h}',tokens[0],screenshot,token_files[1],tokens[1],info)
             assert all(publisher.poll() is None for publisher in publishers), 'publisher ended before authentication/browser assertions'
@@ -173,6 +174,51 @@ def run(binary, chromium=None, screenshot=None):
         finally:
             for child in reversed(children):
                 stop(child)
+
+
+def mixed_authentication(binary, root, runtime, request, protected_port, token_files, password_file):
+    web, ingest = port(), port()
+    template = root / 'mixed-auth-template'
+    template.write_text('\n'.join([
+        'configured=true', f'web_port={web}', 'web_bind_all=true',
+        f'ingest_port={ingest}', 'ingest_bind_all=false', 'buffer_mb=50',
+        f'buffer_path={root}/mixed-cache/stream.buf', f'overlays_dir={root}/mixed-overlays',
+        'tracing_enabled=false', 'update_check_enabled=false', 'open_dashboard_on_launch=false',
+        f'dock_token_file={token_files[0]}',
+    ]) + '\n')
+    env = os.environ | {'INSTANTCLONE_MANAGED':'1', 'INSTANTCLONE_NO_TRACE':'1',
+                        'INSTANTCLONE_TEMPLATE':str(template), 'XDG_RUNTIME_DIR':str(runtime),
+                        'CONFIG_PATH':str(runtime / 'mixed-instance/config'),
+                        'INSTANTCLONE_DESK_LANDSCAPE_PORT':str(web),
+                        'INSTANTCLONE_DESK_PORTRAIT_PORT':str(protected_port),
+                        'INSTANTCLONE_DESK_PORTRAIT_TOKEN_FILE':str(token_files[1])}
+    peer_cookie = f'ic_dock={token_files[1].read_text()}'
+    before = json.loads(request(protected_port, '/state', cookie=peer_cookie)[1])
+    with (root / 'mixed-auth.log').open('wb') as log:
+        relay = subprocess.Popen([binary,'--no-browser'],env=env,cwd=root,stdout=log,stderr=log)
+    try:
+        wait(lambda: request(web, '/state')[0] == 200)
+        assert request(web, '/desk/landscape/state')[0] == 200, 'public self-relay control changed'
+        for cookie in ['', f'ic_dock={token_files[0].read_text()}']:
+            for action, body in [('state', None), ('arm', 'ms=5000'), ('stop', ''), ('disarm', '')]:
+                status, response, _ = request(web, f'/desk/portrait/{action}', body=body, cookie=cookie)
+                assert status == 401 and 'Host relay authentication required' in response, (action, status, response)
+                assert all(file.read_text() not in response for file in token_files)
+        after = json.loads(request(protected_port, '/state', cookie=peer_cookie)[1])
+        assert after['armed_delay_ms'] == before['armed_delay_ms']
+        assert after['phase'] == before['phase']
+    finally:
+        stop(relay)
+    template.write_text(template.read_text() + f'dashboard_password_hash_file={password_file}\n')
+    with (root / 'mixed-auth-protected.log').open('wb') as log:
+        relay = subprocess.Popen([binary,'--no-browser'],env=env,cwd=root,stdout=log,stderr=log)
+    try:
+        wait(lambda: request(web, '/state')[0] == 401)
+        assert request(web, '/desk/portrait/state')[0] == 401
+        assert request(web, '/desk/portrait/state', cookie=f'ic_dock={token_files[0].read_text()}')[0] == 200
+    finally:
+        stop(relay)
+    print('PASS: unauthenticated hosts cannot bridge private peer tokens; authenticated host redeployment restores authorized bridging')
 
 
 def browser_check(chromium, root, base, token, screenshot, peer_file, peer_token, desk_info):
@@ -194,7 +240,7 @@ def browser_check(chromium, root, base, token, screenshot, peer_file, peer_token
         debug_port, path = active.read_text().splitlines()[:2]
         result = subprocess.run(['node',str(Path(__file__).with_name('live.cjs')),
                                  f'ws://127.0.0.1:{debug_port}{path}',base,token,screenshot or '',str(peer_file),peer_token,str(desk_info)],
-                                capture_output=True,text=True,timeout=45)
+                                capture_output=True,text=True,timeout=45,check=False)
         assert result.returncode == 0, result.stderr[-2000:]
         print(result.stdout.strip())
     finally:

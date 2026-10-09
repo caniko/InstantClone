@@ -1,7 +1,7 @@
 // Real Chromium + real relay HTTP. No fetch stubs or credential reads from JS.
 const assert = require('node:assert/strict');
-const {writeFileSync}=require('node:fs');
-const [endpoint,base,token,screenshot,peerFile,peerToken] = process.argv.slice(2);
+const {writeFileSync,readFileSync}=require('node:fs');
+const [endpoint,base,token,screenshot,peerFile,peerToken,deskInfo] = process.argv.slice(2);
 const socket = new WebSocket(endpoint);
 let sequence=0, sessionId;
 const pending=new Map();
@@ -67,13 +67,26 @@ async function run() {
   assert.equal(await evaluate("document.querySelector('[data-action=arm]').disabled"),true);
   writeFileSync(peerFile,peerToken,{mode:0o600});
   await until("[...document.querySelectorAll('#programs .status')].every(e=>e.textContent==='Receiving')");
+  // Change real HTTP desk metadata while this OBS-style dock remains open.
+  const topology=JSON.parse(readFileSync(deskInfo,'utf8'));
+  writeFileSync(deskInfo,JSON.stringify({...topology,portrait:{...topology.portrait,enabled:false}}));
+  await until("document.querySelectorAll('#programs .status')[1].textContent==='Not configured' && document.querySelectorAll('#destinations tr').length===2");
+  responses.length=0;
+  await new Promise(resolve=>setTimeout(resolve,1200));
+  assert.ok(!responses.some(r=>r.path.startsWith('/desk/portrait/')),'Disabled program still polled');
+  assert.equal(await evaluate("document.querySelectorAll('#setup p')[1].textContent"),'Portrait: relay not enabled');
+  writeFileSync(deskInfo,JSON.stringify({...topology,portrait:{...topology.portrait,ingestPort:topology.portrait.ingestPort+1}}));
+  await until("document.querySelectorAll('#destinations tr').length===4 && [...document.querySelectorAll('#programs .status')].every(e=>e.textContent==='Receiving')");
+  assert.ok((await evaluate("document.querySelectorAll('#setup p')[1].textContent")).includes(`:${topology.portrait.ingestPort+1}/live`),'Redeployed ingest instructions stale');
+  writeFileSync(deskInfo,JSON.stringify(topology));
+  await until(`document.querySelectorAll('#setup p')[1].textContent.includes(':${topology.portrait.ingestPort}/live')`);
   if (screenshot) {
     const {data}=await command('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});
     writeFileSync(screenshot,Buffer.from(data,'base64'));
   }
   assert.equal(await evaluate("fetch('/config',{method:'POST',body:''}).then(r=>r.status)"),403);
   await command('Target.closeTarget',{targetId});
-  console.log('PASS: real-server Chromium login, dock-token asset loading, duplicate destinations and portrait-only action');
+  console.log('PASS: real-server Chromium login, dock-token assets, duplicate destinations, action isolation and live topology redeploys');
 }
 const deadline=setTimeout(()=>{console.error('Browser test deadline exceeded');process.exit(1);},40000);
 run().then(()=>{clearTimeout(deadline);socket.close();}).catch(error=>{clearTimeout(deadline);console.error(error.message);socket.close();process.exitCode=1;});

@@ -165,7 +165,7 @@ def run(binary, chromium=None, screenshot=None):
             assert state('landscape')['armed_delay_ms'] == 0, 'portrait action changed landscape'
             assert request(web_h,'/desk/portrait/disarm',body='',cookie=cookie)[0] == 200
             if chromium:
-                browser_check(chromium,root,f'http://127.0.0.1:{web_h}',tokens[0],screenshot,token_files[1],tokens[1])
+                browser_check(chromium,root,f'http://127.0.0.1:{web_h}',tokens[0],screenshot,token_files[1],tokens[1],info)
             assert all(publisher.poll() is None for publisher in publishers), 'publisher ended before authentication/browser assertions'
             for file in root.glob('relay-*.log'):
                 assert all(token not in file.read_text() for token in tokens), 'control token leaked into logs'
@@ -175,7 +175,7 @@ def run(binary, chromium=None, screenshot=None):
                 stop(child)
 
 
-def browser_check(chromium, root, base, token, screenshot, peer_file, peer_token):
+def browser_check(chromium, root, base, token, screenshot, peer_file, peer_token, desk_info):
     profile = root / 'browser-profile'
     env = os.environ.copy()
     for name in ['HOME','XDG_CONFIG_HOME','XDG_CACHE_HOME']:
@@ -193,7 +193,7 @@ def browser_check(chromium, root, base, token, screenshot, peer_file, peer_token
         assert browser.poll() is None, 'headless browser exited'
         debug_port, path = active.read_text().splitlines()[:2]
         result = subprocess.run(['node',str(Path(__file__).with_name('live.cjs')),
-                                 f'ws://127.0.0.1:{debug_port}{path}',base,token,screenshot or '',str(peer_file),peer_token],
+                                 f'ws://127.0.0.1:{debug_port}{path}',base,token,screenshot or '',str(peer_file),peer_token,str(desk_info)],
                                 capture_output=True,text=True,timeout=45)
         assert result.returncode == 0, result.stderr[-2000:]
         print(result.stdout.strip())

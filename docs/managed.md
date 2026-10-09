@@ -68,6 +68,10 @@ authentication/control-token pairing fails before persisting runtime settings.
 Direct `dock_token` and `dashboard_password_hash` fields are rejected, even when
 empty or declared alongside a credential-file directive in either order. Only
 validated file credentials can supply the runtime authentication values.
+Discord notifications use `discord_webhook_url_file`, pointing at a private
+user-owned file containing the HTTPS webhook URL. Direct `discord_webhook_url`
+declarations are rejected, including empty fields. The URL is rendered only into
+the private runtime configuration and is never returned by managed `/config`.
 
 Give each program a distinct 16–128-character hex control token, stored in a
 private user-owned file (mode `0400` or `0600`). Set
@@ -126,6 +130,13 @@ local fan-out and restart isolation; provider/account acceptance is a separate g
 All managed qualification publishers remain alive until their assertions finish
 and are explicitly stopped during cleanup. Startup, reconnect and browser budgets
 cannot expire an input before its media/authentication assertions.
+
+An open desk refreshes `/desk/info` with each telemetry poll. Redeployed enabled
+programs and ingest instructions become visible without reloading the OBS dock;
+disabled or changed programs lose cached telemetry before the next poll.
+Managed wire traces use `<CONFIG_PATH>.trace.log` with per-instance writers and
+size budgets. The dual-relay check enables tracing in both relays sharing one
+working directory and verifies separate private, redacted trace files.
 
 `managed-security` additionally exercises real HTTP login/logout, anonymous and
 invalid credential rejection, protected self/peer bridging, private-file guards,

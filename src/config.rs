@@ -1500,7 +1500,11 @@ impl Settings {
             bp = json_str(&self.buffer_path.display().to_string()),
             td = self.target_delay_ms,
             ou = json_str(&self.obs_url()),
-            dw = json_str(&redact_webhook(&self.discord_webhook_url)),
+            dw = json_str(&if crate::managed::enabled() {
+                String::new()
+            } else {
+                redact_webhook(&self.discord_webhook_url)
+            }),
             ws = !self.discord_webhook_url.is_empty(),
             ov = json_str(&self.overlays_dir.display().to_string()),
             te = self.tracing_enabled,

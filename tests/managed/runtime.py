@@ -1,4 +1,5 @@
 """Local-only managed-mode/secret/forwarding checks. No provider is contacted."""
+import json
 import os
 import secrets
 import signal
@@ -57,6 +58,10 @@ def run(binary, store_template, package_derivation):
         control_file = root / 'control.token'
         control_file.write_text(control_token + '\n')
         control_file.chmod(0o600)
+        webhook_url = f'https://127.0.0.1:{port()}/api/webhooks/disposable/{secrets.token_hex(24)}'
+        webhook_file = root / 'discord.webhook'
+        webhook_file.write_text(webhook_url + '\n')
+        webhook_file.chmod(0o600)
         key_paths = [root / 'a.key', root / 'b.key']
         # Real age encryption/decryption, using disposable test-only identities.
         identity = root / 'identity'
@@ -132,6 +137,8 @@ def run(binary, store_template, package_derivation):
                 ('destination.0.enabled=false\ndestination.0.stream_key=plaintext-test-key', b'stream_key_file'),
                 ('stream_key=plaintext-test-key', b'stream_key_file'),
                 ('ingest_key=plaintext-test-key', b'ingest_key_file'),
+                (f'discord_webhook_url={webhook_url}', b'discord_webhook_url_file'),
+                ('discord_webhook_url=', b'discord_webhook_url_file'),
             ]
             for index in ['128', '18446744073709551616', '-1', 'not-a-number', '01']:
                 declarations.append((f'destination.{index}.enabled=true', b'invalid declared destination index'))
@@ -163,6 +170,9 @@ def run(binary, store_template, package_derivation):
             assert result.returncode != 0 and b'explicit nonempty id required' in result.stderr
             assert not config.exists(), 'missing destination ID persisted a generated default'
             template.write_text(original_template)
+            # Configure a loopback-only webhook; no external provider is contacted.
+            original_template += f'discord_webhook_url_file={webhook_file}\n'
+            template.write_text(original_template)
             proc = start()
             assert config.stat().st_mode & 0o777 == 0o600
             assert config.parent.stat().st_mode & 0o777 == 0o700
@@ -173,6 +183,10 @@ def run(binary, store_template, package_derivation):
             assert f'destination.0.custom_egress_url=rtmp://127.0.0.1:{receiver_a}/live' in content
             assert f'destination.1.custom_egress_url={server_url}' in content
             assert 'custom_egress_url_file=' not in content
+            assert f'discord_webhook_url={webhook_url}' in content
+            assert 'discord_webhook_url_file=' not in content
+            public_config = json.loads(request('/config')[1])
+            assert public_config['webhook_set'] and public_config['discord_webhook_url'] == ''
             with socket.create_connection(('127.0.0.1', ingest), timeout=2):
                 pass
             # Exact IPv4 binds, no bonus IPv6 ingest listener in managed mode.
@@ -190,6 +204,7 @@ def run(binary, store_template, package_derivation):
                 assert all(key.encode() not in body for key in keys)
                 assert ingest_key.encode() not in body and control_token.encode() not in body, path
                 assert server_url.encode() not in body, path
+                assert webhook_url.encode() not in body, path
             command = Path(f'/proc/{proc.pid}/cmdline').read_bytes()
             assert all(key.encode() not in command for key in keys)
             environment = Path(f'/proc/{proc.pid}/environ').read_bytes()
@@ -234,11 +249,11 @@ def run(binary, store_template, package_derivation):
             assert proc.returncode == 0
             assert not (root / 'cache/stream.buf').exists()
             assert b'Shutting down (sigterm)' in logs.read_bytes()
-            trace = runtime / 'instantclone-trace.log'
+            trace = Path(str(config) + '.trace.log')
             assert trace.exists() and b'EGRESS_DIAL' in trace.read_bytes(), 'tracing was not exercised'
             assert b'managed detail redacted' in trace.read_bytes(), 'managed trace policy was not applied'
             assert all(value.encode() not in trace.read_bytes()
-                       for value in keys + [ingest_key, control_token, server_url]), 'credential leaked into trace'
+                       for value in keys + [ingest_key, control_token, server_url, webhook_url]), 'credential leaked into trace'
             assert f'127.0.0.1:{receiver_b}'.encode() not in trace.read_bytes(), 'secret endpoint leaked into trace'
             stop(publisher)
             # Runtime edits are discarded, and fresh secret bytes read on restart.
@@ -252,6 +267,24 @@ def run(binary, store_template, package_derivation):
             for path in ['/state', '/config', '/destinations', '/logs']:
                 assert rotated.encode() not in request(path)[1], 'short secret leaked'
             stop(proc)
+            for payload in [b'', b'https://127.0.0.1/secret\ningest_bind_all=true', b'http://127.0.0.1/secret', b'https://127.0.0.1/a key']:
+                webhook_file.write_bytes(payload)
+                result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime,
+                                        capture_output=True, timeout=10, check=False)
+                assert result.returncode != 0 and b'invalid Discord webhook credential' in result.stderr
+                assert b'secret' not in result.stderr and b'a key' not in result.stderr
+            webhook_file.write_text(webhook_url)
+            webhook_file.chmod(0o644)
+            result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime,
+                                    capture_output=True, timeout=10, check=False)
+            assert result.returncode != 0 and b'private and user-owned' in result.stderr
+            webhook_file.chmod(0o600)
+            webhook_file.unlink()
+            result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime,
+                                    capture_output=True, timeout=10, check=False)
+            assert result.returncode != 0 and b'credential unavailable' in result.stderr
+            webhook_file.write_text(webhook_url)
+            webhook_file.chmod(0o600)
             for path, name, restored in [(key_paths[0], 'local-0', rotated),
                                          (ingest_file, 'ingest', ingest_key)]:
                 for payload in [b'', b'\n', b'bad\nkey', b'bad\x00key', b'bad/key', b' key', b'key\n\n']:
@@ -286,6 +319,7 @@ def run(binary, store_template, package_derivation):
                 data = artifact.read_bytes()
                 assert all(key.encode() not in data for key in keys), 'secret leakage detected'
             assert server_url.encode() not in logs.read_bytes(), 'secret server URL leaked to journal'
+            assert webhook_url.encode() not in logs.read_bytes(), 'webhook credential leaked to journal'
             assert f'127.0.0.1:{receiver_b}'.encode() not in logs.read_bytes(), 'secret endpoint leaked to journal'
             print('PASS: strict declarations, runtime secrets, exact binds, dashboard, SIGTERM cleanup, restart, rotation, port collisions, two local RTMP receivers and reconnect')
         finally:

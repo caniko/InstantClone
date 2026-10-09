@@ -16,6 +16,8 @@
 //! disables the whole subsystem regardless of the runtime atomic.
 //! Managed mode retains event categories and timing only: detail strings may
 //! contain credential-file endpoints or credentials echoed by a remote server.
+//! Each managed instance uses `<CONFIG_PATH>.trace.log` so its writer and cap
+//! remain isolated even when landscape and portrait share a working directory.
 //!
 //! Writes are protected by a mutex; the hot path is a single locked
 //! `writeln!` per event, which at typical ~30 fps is ~3000 lines / s on

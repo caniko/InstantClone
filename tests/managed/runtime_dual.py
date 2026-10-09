@@ -114,7 +114,7 @@ def run(binary, package_derivation):
                 f'web_port={web}', 'web_bind_all=false', 'buffer_mb=50',
                 f'buffer_path={root}/cache-{cache_name}/stream.buf',
                 f'overlays_dir={root}/state-{cache_name}/overlays',
-                'tracing_enabled=false', 'update_check_enabled=false',
+                'tracing_enabled=true', 'update_check_enabled=false',
                 'open_dashboard_on_launch=false',
             ]
             for index, (receiver, key_path) in enumerate(zip(receivers, program_keys, strict=True)):
@@ -134,13 +134,14 @@ def run(binary, package_derivation):
         template(template_v, ingest_v, web_v, recv_v, key_paths[4:], 'v')
 
         def env_for(cfg, tmpl):
-            return os.environ | {
+            environment = os.environ | {
                 'XDG_RUNTIME_DIR': str(runtime), 'CONFIG_PATH': str(cfg),
                 'INSTANTCLONE_MANAGED': '1', 'INSTANTCLONE_TEMPLATE': str(tmpl),
-                'INSTANTCLONE_NO_TRACE': '1',
                 'INSTANTCLONE_DESK_LANDSCAPE_PORT': str(web_h),
                 'INSTANTCLONE_DESK_PORTRAIT_PORT': str(web_v),
             }
+            environment.pop('INSTANTCLONE_NO_TRACE', None)
+            return environment
 
         def request(web, path, method='GET'):
             req = urllib.request.Request(f'http://127.0.0.1:{web}{path}', method=method,
@@ -290,6 +291,14 @@ def run(binary, package_derivation):
             stop(proc_v)
             assert proc_h.returncode == 0
             assert proc_v.returncode == 0
+            traces = [Path(str(config) + '.trace.log') for config in [config_h, config_v]]
+            for trace in traces:
+                assert trace.exists() and trace.stat().st_mode & 0o777 == 0o600
+                assert b'EGRESS_DIAL' in trace.read_bytes(), 'relay did not exercise its own trace'
+                assert b'managed detail redacted' in trace.read_bytes()
+                assert all(key.encode() not in trace.read_bytes() for key in keys)
+            assert traces[0].stat().st_ino != traces[1].stat().st_ino, 'relays shared a trace writer'
+            assert not (runtime / 'instantclone-trace.log').exists(), 'managed relays used the shared cwd trace'
             print('PASS: dual relays forward four landscape and four portrait egresses concurrently with restart isolation and fresh decoded recovery')
         finally:
             for child in reversed(children):

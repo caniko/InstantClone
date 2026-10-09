@@ -112,12 +112,18 @@ if (typeof document !== 'undefined') {
   }
   async function poll() {
     try {
-      if (!info) {
-        info=await request('/desk/info');
-        for (const id of PROGRAMS) {
-          programs[id].enabled=info[id].enabled;
+      const nextInfo=await request('/desk/info');
+      if (PROGRAMS.some(id=>!nextInfo[id] || typeof nextInfo[id].enabled!=='boolean')) throw new Error('Invalid desk configuration');
+      for (const id of PROGRAMS) {
+        const p=programs[id];
+        if (JSON.stringify(info?.[id])!==JSON.stringify(nextInfo[id])) {
+          p.version=(p.version || 0)+1;
+          p.state=null; p.previous=null; p.destinations=[];
+          p.updated=0; p.previousUpdated=0; p.error=null;
         }
+        p.enabled=nextInfo[id].enabled;
       }
+      info=nextInfo;
       await Promise.all(PROGRAMS.filter(id=>programs[id].enabled).map(async id=>{
         const p=programs[id], version=p.version;
         try {

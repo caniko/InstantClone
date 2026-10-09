@@ -131,7 +131,14 @@ fn main() -> std::io::Result<()> {
     // and every cut so any "Twitch live looks broken but VOD is fine"
     // class of bug can be diagnosed by diffing the file against a known-
     // good capture. Opt-out via INSTANTCLONE_NO_TRACE=1.
-    trace::init("./instantclone-trace.log");
+    let trace_path = if managed::enabled() {
+        let mut path = cfg_path.clone().into_os_string();
+        path.push(".trace.log");
+        PathBuf::from(path)
+    } else {
+        PathBuf::from("./instantclone-trace.log")
+    };
+    trace::init(trace_path);
 
     let mut settings = Settings::load_or_default(&cfg_path);
     // Honour the persisted tracing toggle from disk. init() defaults to

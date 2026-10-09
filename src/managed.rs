@@ -236,7 +236,11 @@ pub fn prepare() -> io::Result<()> {
             "InstantClone: managed templates require ingest_key_file instead of a plaintext ingest key",
         ));
     }
-    for key in ["dock_token", "dashboard_password_hash"] {
+    for key in [
+        "dock_token",
+        "dashboard_password_hash",
+        "discord_webhook_url",
+    ] {
         if fields.contains_key(key) {
             return Err(invalid(&format!(
                 "InstantClone: managed templates require {key}_file instead of inline control credentials"
@@ -352,6 +356,21 @@ pub fn prepare() -> io::Result<()> {
                     "dock_token={}\n",
                     control_token_file(&secret_path)?
                 ));
+                continue;
+            }
+            if key == "discord_webhook_url_file" {
+                let secret_path = value
+                    .strip_prefix("${XDG_RUNTIME_DIR}/")
+                    .map(|p| Path::new(&runtime).join(p))
+                    .unwrap_or_else(|| value.into());
+                let url = private_credential(&secret_path)?;
+                if !url.starts_with("https://")
+                    || url.len() <= "https://".len()
+                    || !url.bytes().all(|b| b.is_ascii_graphic())
+                {
+                    return Err(invalid("InstantClone: invalid Discord webhook credential"));
+                }
+                rendered.push_str(&format!("discord_webhook_url={url}\n"));
                 continue;
             }
             if key == "dashboard_password_hash_file" {

@@ -189,6 +189,13 @@ fn validate_server_url(text: &str, name: &str, platform: &str) -> io::Result<()>
     Ok(())
 }
 
+// URL file directives render into the same Settings field as inline URLs.
+fn logical_field(key: &str) -> &str {
+    key.strip_suffix("_file")
+        .filter(|field| field.starts_with("destination.") && field.ends_with(".custom_egress_url"))
+        .unwrap_or(key)
+}
+
 pub fn prepare() -> io::Result<()> {
     if !enabled() {
         return Ok(());
@@ -225,7 +232,7 @@ pub fn prepare() -> io::Result<()> {
                 .map(|(key, value)| (key.trim(), value.trim()))
                 .filter(|(key, _)| !key.is_empty())
                 .ok_or_else(|| invalid("InstantClone: malformed managed declaration"))?;
-            last_declaration.insert(field.0, index);
+            last_declaration.insert(logical_field(field.0), index);
             Ok(field)
         })
         .collect::<io::Result<_>>()?;
@@ -315,21 +322,6 @@ pub fn prepare() -> io::Result<()> {
         if !valid {
             return Err(invalid(&format!("InstantClone: invalid declared {key}")));
         }
-        if let Some(prefix) = key.strip_suffix(".custom_egress_url") {
-            if uses_custom_url(prefix) {
-                validate_server_url(
-                    value,
-                    fields
-                        .get(format!("{prefix}.name").as_str())
-                        .copied()
-                        .unwrap_or("unnamed"),
-                    fields
-                        .get(format!("{prefix}.platform").as_str())
-                        .copied()
-                        .unwrap_or("custom"),
-                )?;
-            }
-        }
     }
     let mut directories = vec![path
         .parent()
@@ -368,9 +360,12 @@ pub fn prepare() -> io::Result<()> {
                     | "discord_webhook_url_file"
             ) || (key.starts_with("destination.")
                 && (key.ends_with(".stream_key_file") || key.ends_with(".custom_egress_url_file")));
-            // Read only the effective credential declaration, including repeated
-            // identical paths. Superseded files may have been removed or retired.
-            if credential_file && last_declaration.get(key).copied() != Some(index) {
+            let inline_url = key.starts_with("destination.") && key.ends_with(".custom_egress_url");
+            // Read/render only the effective logical declaration, including
+            // inline/file URL overrides and repeated identical credential paths.
+            if (credential_file || inline_url)
+                && last_declaration.get(logical_field(key)).copied() != Some(index)
+            {
                 continue;
             }
             if key == "ingest_key_file" {
@@ -443,14 +438,26 @@ pub fn prepare() -> io::Result<()> {
                 if !uses_custom_url(prefix) {
                     continue;
                 }
+                if inline_url {
+                    validate_server_url(
+                        value,
+                        fields
+                            .get(format!("{prefix}.name").as_str())
+                            .copied()
+                            .unwrap_or("unnamed"),
+                        fields
+                            .get(format!("{prefix}.platform").as_str())
+                            .copied()
+                            .unwrap_or("custom"),
+                    )?;
+                }
             }
-            // Last declaration wins, as in Settings. A disabled destination may
-            // retain file references after its credentials have been retired.
-            if let Some(prefix) = key
-                .strip_suffix(".stream_key_file")
-                .or_else(|| key.strip_suffix(".custom_egress_url_file"))
-            {
-                if fields.get(format!("{prefix}.enabled").as_str()).copied() == Some("false") {
+            // Disabled destinations and local sinks do not consume stream keys.
+            // They may retain file references after credentials have been retired.
+            if let Some(prefix) = key.strip_suffix(".stream_key_file") {
+                if fields.get(format!("{prefix}.enabled").as_str()).copied() == Some("false")
+                    || fields.get(format!("{prefix}.platform").as_str()).copied() == Some("sink")
+                {
                     continue;
                 }
             }

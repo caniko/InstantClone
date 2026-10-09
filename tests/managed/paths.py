@@ -177,6 +177,99 @@ def superseded_credentials(binary, root, runtime):
     print('PASS: superseded missing/malformed credential files are skipped; final credentials render once and remain mandatory')
 
 
+def url_source_overrides(binary, root, runtime):
+    template = root / 'url-source-template'
+    key = root / 'url-source.key'
+    key.write_text('disposable-url-source-key')
+    key.chmod(0o600)
+    server = root / 'url-source.server'
+    server.write_text('rtmp://127.0.0.1:1/file-app')
+    server.chmod(0o600)
+    invalid = root / 'url-source-invalid.server'
+    invalid.write_text('retired malformed server\nsecond line')
+    invalid.chmod(0o600)
+    missing = root / 'url-source-missing.server'
+    inline = 'rtmp://127.0.0.1:1/inline-app'
+    cases = [(f'custom_egress_url_file={stale}\ncustom_egress_url={inline}', inline)
+             for stale in [missing, invalid, server]]
+    cases += [(f'custom_egress_url={stale}\ncustom_egress_url_file={server}', server.read_text())
+              for stale in ['', 'obsolete-server', inline]]
+    for platform in ['custom', 'kick']:
+        config = runtime / f'url-source-{platform}/config'
+        env = os.environ | {'INSTANTCLONE_MANAGED':'1','INSTANTCLONE_TEMPLATE':str(template),
+                            'XDG_RUNTIME_DIR':str(runtime),'CONFIG_PATH':str(config)}
+        with socket.socket() as occupied:
+            occupied.bind(('127.0.0.1', 0))
+            occupied.listen()
+            header = (f'configured=true\ningest_port={occupied.getsockname()[1]}\nweb_port={port()}\n'
+                      f'buffer_path={root}/url-source-cache/stream.buf\noverlays_dir={root}/url-source-overlays\n'
+                      'buffer_mb=50\ningest_bind_all=false\nweb_bind_all=false\n'
+                      'update_check_enabled=false\nopen_dashboard_on_launch=false\n'
+                      'destination.0.name=URL source\ndestination.0.id=url-source\ndestination.0.enabled=true\n'
+                      f'destination.0.platform={platform}\ndestination.0.stream_key_file={key}\n')
+            for directives, expected in cases:
+                template.write_text(header + ''.join(f'destination.0.{line}\n' for line in directives.splitlines()))
+                result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
+                assert result.returncode != 0 and b'configured ingest port is unavailable' in result.stderr, (platform, result.stderr)
+                rendered = config.read_text()
+                values = [line.split('=', 1)[1].strip() for line in rendered.splitlines()
+                          if line.startswith('destination.0.custom_egress_url=')]
+                assert values == [expected], (platform, values)
+                assert 'custom_egress_url_file=' not in rendered and 'obsolete-server' not in rendered
+                assert 'retired malformed server' not in rendered
+            for final in [f'custom_egress_url_file={missing}', 'custom_egress_url=obsolete-server']:
+                template.write_text(header + f'destination.0.custom_egress_url={inline}\n'
+                                    + f'destination.0.custom_egress_url_file={server}\n' + f'destination.0.{final}\n')
+                result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
+                assert result.returncode != 0 and b'configured ingest port is unavailable' not in result.stderr
+                assert config.read_text() == rendered, 'invalid final URL source replaced runtime config'
+                assert key.read_bytes() not in result.stderr
+    print('PASS: Custom/Kick URL file and inline forms share final-source semantics; invalid final sources preserve runtime config')
+
+
+def sink_credentials(binary, root, runtime):
+    template = root / 'sink-template'
+    valid = root / 'sink-retired.key'
+    valid.write_text('disposable-retired-sink-key')
+    valid.chmod(0o600)
+    invalid = root / 'sink-invalid.key'
+    invalid.write_text('invalid retired key\nsecond line')
+    invalid.chmod(0o600)
+    missing = root / 'sink-missing.key'
+    for index, stale in enumerate([missing, invalid, valid]):
+        config = runtime / f'sink-instance-{index}/config'
+        env = os.environ | {'INSTANTCLONE_MANAGED':'1','INSTANTCLONE_TEMPLATE':str(template),
+                            'XDG_RUNTIME_DIR':str(runtime),'CONFIG_PATH':str(config)}
+        with socket.socket() as occupied:
+            occupied.bind(('127.0.0.1', 0))
+            occupied.listen()
+            header = (f'configured=true\ningest_port={occupied.getsockname()[1]}\nweb_port={port()}\n'
+                      f'buffer_path={root}/sink-cache/stream.buf\noverlays_dir={root}/sink-overlays\n'
+                      'buffer_mb=50\ningest_bind_all=false\nweb_bind_all=false\n'
+                      'update_check_enabled=false\nopen_dashboard_on_launch=false\n'
+                      'destination.0.name=Sink\ndestination.0.id=sink\ndestination.0.enabled=false\n'
+                      'destination.0.platform=custom\n')
+            for declarations in ['before', 'after']:
+                sink = 'destination.0.platform=sink\ndestination.0.enabled=true\n'
+                credential = f'destination.0.stream_key_file={stale}\n'
+                text = header + (sink + credential if declarations == 'before' else credential + sink)
+                template.write_text(text)
+                result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
+                assert result.returncode != 0 and b'configured ingest port is unavailable' in result.stderr, result.stderr
+                rendered = config.read_text()
+                assert 'destination.0.stream_key' not in rendered and valid.read_text() not in rendered
+                template.write_text(text + 'destination.0.platform=custom\ndestination.0.custom_egress_url=rtmp://127.0.0.1:1/live\n')
+                result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
+                if stale != valid:
+                    assert result.returncode != 0 and b'configured ingest port is unavailable' not in result.stderr
+                    assert config.read_text() == rendered, 'missing/malformed provider key replaced sink config'
+                else:
+                    assert result.returncode != 0 and b'configured ingest port is unavailable' in result.stderr
+                    assert f'destination.0.stream_key={valid.read_text()}\n' in config.read_text()
+                assert valid.read_bytes() not in result.stderr
+    print('PASS: enabled sinks skip retired stream-key files regardless of order; provider switches require credentials')
+
+
 def run(binary):
     with tempfile.TemporaryDirectory(prefix='instantclone-paths-') as tmp:
         root = Path(tmp)
@@ -262,6 +355,8 @@ def run(binary):
         disabled_credentials(binary, root, runtime)
         unused_custom_urls(binary, root, runtime)
         superseded_credentials(binary, root, runtime)
+        url_source_overrides(binary, root, runtime)
+        sink_credentials(binary, root, runtime)
 
 
 if __name__ == '__main__':

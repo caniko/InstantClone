@@ -78,6 +78,11 @@ Repeated credential-file declarations use only the last occurrence, matching
 Settings' final-value semantics. Superseded files are not read or rendered; an
 unavailable final credential still fails preparation and preserves the previous
 runtime configuration.
+For Custom/Kick endpoints, inline `custom_egress_url` and credential-backed
+`custom_egress_url_file` declarations share one logical field: only the final
+source is read, validated and rendered. Local `sink` destinations also omit
+retained stream-key file references even when enabled; switching back to a
+provider requires its stream-key credential again.
 Custom server URLs are used only by enabled `custom` or `kick` destinations.
 Unused `custom_egress_url` and `custom_egress_url_file` fields are omitted from
 runtime rendering, including the serializer's empty fields for other platforms

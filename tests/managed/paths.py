@@ -126,6 +126,57 @@ def unused_custom_urls(binary, root, runtime):
     print('PASS: unused/disabled custom URL metadata is omitted; active custom/Kick URL validation remains strict without provider contact')
 
 
+def superseded_credentials(binary, root, runtime):
+    template = root / 'layered-template'
+    credentials = {
+        'ingest_key': 'disposable-effective-ingest',
+        'dock_token': 'abcd' * 16,
+        'dashboard_password_hash': 'pbkdf2-sha256$1000$' + 'ab' * 16 + '$' + 'cd' * 32,
+        'discord_webhook_url': 'https://127.0.0.1/disposable-webhook',
+        'destination.0.stream_key': 'disposable-effective-key',
+        'destination.0.custom_egress_url': 'rtmp://127.0.0.1:1/live',
+    }
+    files = {}
+    for field, value in credentials.items():
+        path = root / (field + '.credential')
+        path.write_text(value)
+        path.chmod(0o600)
+        files[field + '_file'] = path
+    invalid = root / 'superseded-invalid-credential'
+    invalid.write_text('disposable invalid credential\nsecond line')
+    invalid.chmod(0o600)
+    missing = root / 'superseded-missing-credential'
+    for index, field in enumerate(files):
+        config = runtime / f'layered-instance-{index}/config'
+        env = os.environ | {'INSTANTCLONE_MANAGED':'1','INSTANTCLONE_TEMPLATE':str(template),
+                            'XDG_RUNTIME_DIR':str(runtime),'CONFIG_PATH':str(config)}
+        with socket.socket() as occupied:
+            occupied.bind(('127.0.0.1', 0))
+            occupied.listen()
+            header = (f'configured=true\ningest_port={occupied.getsockname()[1]}\nweb_port={port()}\n'
+                      f'buffer_path={root}/layered-cache/stream.buf\noverlays_dir={root}/layered-overlays\n'
+                      'buffer_mb=50\ningest_bind_all=false\nweb_bind_all=false\n'
+                      'update_check_enabled=false\nopen_dashboard_on_launch=false\n'
+                      'destination.0.name=Layered\ndestination.0.id=layered\n'
+                      'destination.0.enabled=true\ndestination.0.platform=custom\n')
+            final = ''.join(f' {name} = {path} \n' * 2 for name, path in files.items())
+            for stale in [missing, invalid]:
+                template.write_text(header + f'{field}={stale}\n# replaced credential\n\n' + final)
+                result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
+                assert result.returncode != 0 and b'configured ingest port is unavailable' in result.stderr, (field, result.stderr)
+                rendered = config.read_text()
+                declarations = [line.split('=', 1) for line in rendered.splitlines() if '=' in line and not line.startswith('#')]
+                for name, value in credentials.items():
+                    assert [v for k, v in declarations if k == name] == [value], (field, name)
+                assert 'superseded-' not in rendered and 'disposable invalid credential' not in rendered
+            template.write_text(header + final + f'{field}={missing}\n')
+            result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
+            assert result.returncode != 0 and b'configured ingest port is unavailable' not in result.stderr
+            assert config.read_text() == rendered, 'unavailable final credential replaced prior runtime settings'
+            assert all(value.encode() not in result.stderr for value in credentials.values())
+    print('PASS: superseded missing/malformed credential files are skipped; final credentials render once and remain mandatory')
+
+
 def run(binary):
     with tempfile.TemporaryDirectory(prefix='instantclone-paths-') as tmp:
         root = Path(tmp)
@@ -210,6 +261,7 @@ def run(binary):
         print('PASS: disabled managed metadata starts without keys or an egress connection')
         disabled_credentials(binary, root, runtime)
         unused_custom_urls(binary, root, runtime)
+        superseded_credentials(binary, root, runtime)
 
 
 if __name__ == '__main__':

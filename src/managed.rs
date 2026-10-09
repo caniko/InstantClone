@@ -213,15 +213,20 @@ pub fn prepare() -> io::Result<()> {
         ));
     }
     let text = fs::read_to_string(template)?;
+    let mut last_declaration = BTreeMap::new();
     let fields: BTreeMap<_, _> = text
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|line| {
-            line.split_once('=')
+        .enumerate()
+        .map(|(index, line)| (index, line.trim()))
+        .filter(|(_, line)| !line.is_empty() && !line.starts_with('#'))
+        .map(|(index, line)| {
+            let field = line
+                .split_once('=')
                 .map(|(key, value)| (key.trim(), value.trim()))
                 .filter(|(key, _)| !key.is_empty())
-                .ok_or_else(|| invalid("InstantClone: malformed managed declaration"))
+                .ok_or_else(|| invalid("InstantClone: malformed managed declaration"))?;
+            last_declaration.insert(field.0, index);
+            Ok(field)
         })
         .collect::<io::Result<_>>()?;
     // Reject credentials in the non-secret source, even on disabled destinations
@@ -348,13 +353,26 @@ pub fn prepare() -> io::Result<()> {
         validate_private_directory(directory)?;
     }
     let mut rendered = String::new();
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
         if let Some((key, value)) = line
             .trim()
             .split_once('=')
             .filter(|(key, _)| !key.starts_with('#'))
             .map(|(key, value)| (key.trim(), value.trim()))
         {
+            let credential_file = matches!(
+                key,
+                "ingest_key_file"
+                    | "dock_token_file"
+                    | "dashboard_password_hash_file"
+                    | "discord_webhook_url_file"
+            ) || (key.starts_with("destination.")
+                && (key.ends_with(".stream_key_file") || key.ends_with(".custom_egress_url_file")));
+            // Read only the effective credential declaration, including repeated
+            // identical paths. Superseded files may have been removed or retired.
+            if credential_file && last_declaration.get(key).copied() != Some(index) {
+                continue;
+            }
             if key == "ingest_key_file" {
                 let secret_path = value
                     .strip_prefix("${XDG_RUNTIME_DIR}/")

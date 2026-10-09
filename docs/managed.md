@@ -74,6 +74,10 @@ Disabled destinations may retain `stream_key_file` and `custom_egress_url_file`
 references after those credentials are removed. The final `enabled=false`
 declaration skips both file reads and credential rendering, regardless of line
 order. Re-enabling the destination requires its credentials again.
+Repeated credential-file declarations use only the last occurrence, matching
+Settings' final-value semantics. Superseded files are not read or rendered; an
+unavailable final credential still fails preparation and preserves the previous
+runtime configuration.
 Custom server URLs are used only by enabled `custom` or `kick` destinations.
 Unused `custom_egress_url` and `custom_egress_url_file` fields are omitted from
 runtime rendering, including the serializer's empty fields for other platforms

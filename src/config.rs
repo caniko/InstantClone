@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 /// would otherwise drive `Vec::push` billions of times before the field
 /// even applies, OOMing the process. 128 destinations and 256 profiles
 /// are both already absurd for a single streamer.
-const MAX_DESTINATIONS: usize = 128;
+pub(crate) const MAX_DESTINATIONS: usize = 128;
 const MAX_PROFILES: usize = 256;
 /// Ceiling on saved dock layouts (each is one OBS browser dock's widget
 /// arrangement). Persisted server-side so a layout survives OBS clearing
@@ -617,6 +617,10 @@ impl Destination {
     /// rules as the top-level single-dest path: if a custom URL already has
     /// app+key, the key field is ignored; otherwise the key is appended.
     pub fn egress_url(&self) -> Option<String> {
+        self.egress_url_for_mode(crate::managed::enabled())
+    }
+
+    fn egress_url_for_mode(&self, managed: bool) -> Option<String> {
         // Local test sink: fully self-contained. The URL is fixed (the
         // supervisor spawns the matching `instantclone sink` child on
         // SINK_RTMP_PORT) and the stream key is ignored - the sink
@@ -632,6 +636,9 @@ impl Destination {
         // host for everyone - the streamer pastes their own. Kick's URL is
         // rtmps://, which the egress socket upgrades to TLS transparently.
         if self.platform == "custom" || self.platform == "kick" {
+            if managed && self.stream_key.is_empty() {
+                return None;
+            }
             let mut base = non_empty(&self.custom_egress_url)?
                 .trim_end_matches('/')
                 .to_string();
@@ -647,7 +654,7 @@ impl Destination {
                 .map(|x| x.1)
                 .unwrap_or("");
             let segs = path.split('/').filter(|s| !s.is_empty()).count();
-            if segs >= 2 || self.stream_key.is_empty() {
+            if (segs >= 2 && !managed) || self.stream_key.is_empty() {
                 return Some(base);
             }
             return Some(format!("{}/{}", base, self.stream_key));
@@ -782,12 +789,23 @@ impl Settings {
     }
 
     pub fn load(path: &Path) -> io::Result<Self> {
+        Ok(Self::from_text(&fs::read_to_string(path)?))
+    }
+
+    pub(crate) fn from_text(text: &str) -> Self {
+        let mut s = Self::from_text_unclamped(text);
+        // Standalone hand-edited configuration retains its load-time recovery.
+        s.sanitize_load();
+        s
+    }
+
+    /// Preserve declared values so managed startup can reject invalid settings.
+    pub(crate) fn from_text_unclamped(text: &str) -> Self {
         let mut s = Self::defaults();
         // Both lists are file-authoritative - a user who deletes them all
         // must see them stay deleted across restarts.
         s.profiles.clear();
         s.destinations.clear();
-        let text = fs::read_to_string(path)?;
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -824,11 +842,7 @@ impl Settings {
                 audio_track: "auto".into(),
             });
         }
-        // Clamp / sanitize on load - hand-edited values can otherwise
-        // hit divide-by-zero (buffer_mb=0 → `% capacity` in DiskRing) or
-        // bind two services to the same port (one will silently fail).
-        s.sanitize_load();
-        Ok(s)
+        s
     }
 
     /// Apply on-load clamps that protect against hand-edited / malformed
@@ -1305,6 +1319,17 @@ impl Settings {
     /// IPv6 disabled cannot bind it, and `supervise_ingest` drops it rather
     /// than retrying forever.
     pub fn ingest_addrs(&self) -> Vec<String> {
+        if crate::managed::enabled() {
+            return vec![format!(
+                "{}:{}",
+                if self.ingest_bind_all {
+                    "0.0.0.0"
+                } else {
+                    "127.0.0.1"
+                },
+                self.ingest_port
+            )];
+        }
         let (v4, v6) = if self.ingest_bind_all {
             ("0.0.0.0", "[::]")
         } else {
@@ -1408,7 +1433,7 @@ impl Settings {
             // full session (the edit form needs it), never to a dock-token
             // caller - the redacted `egress_url_redacted` below is enough to
             // render. Consistent with how ingest_key / dock_token are gated.
-            let custom_url_shown = if include_secrets {
+            let custom_url_shown = if include_secrets && !crate::managed::enabled() {
                 d.custom_egress_url.as_str()
             } else {
                 ""
@@ -1475,7 +1500,11 @@ impl Settings {
             bp = json_str(&self.buffer_path.display().to_string()),
             td = self.target_delay_ms,
             ou = json_str(&self.obs_url()),
-            dw = json_str(&redact_webhook(&self.discord_webhook_url)),
+            dw = json_str(&if crate::managed::enabled() {
+                String::new()
+            } else {
+                redact_webhook(&self.discord_webhook_url)
+            }),
             ws = !self.discord_webhook_url.is_empty(),
             ov = json_str(&self.overlays_dir.display().to_string()),
             te = self.tracing_enabled,
@@ -1506,6 +1535,21 @@ impl Settings {
         if self.buffer_mb < MIN_BUFFER_MB {
             errs.push(format!("buffer_mb must be at least {}", MIN_BUFFER_MB));
         }
+        if self.buffer_mb > MAX_BUFFER_MB {
+            errs.push(format!("buffer_mb must be at most {}", MAX_BUFFER_MB));
+        }
+        for (name, delay) in [
+            ("target_delay_ms", self.target_delay_ms),
+            ("armed_delay_ms", self.armed_delay_ms),
+            ("auto_arm_delay_ms", self.auto_arm_delay_ms),
+        ] {
+            if delay > 600_000 {
+                errs.push(format!("{name} must be at most 600000"));
+            }
+        }
+        if self.auto_arm_delay_ms == 0 {
+            errs.push("auto_arm_delay_ms must be > 0".into());
+        }
         // The ingest key travels as an RTMP stream key and is matched after the
         // playpath query is stripped (OBS appends `?clientConfigId=...` under
         // Enhanced Broadcasting). A key with a '?', whitespace, or other char an
@@ -1530,6 +1574,11 @@ impl Settings {
         for d in &self.destinations {
             if d.name.trim().is_empty() {
                 errs.push("destination is missing a name".into());
+                continue;
+            }
+            // Managed templates retain disabled metadata without credentials.
+            // Standalone still validates drafts because its dock can enable them.
+            if !d.enabled && crate::managed::enabled() {
                 continue;
             }
             if d.platform == "custom" || d.platform == "kick" {
@@ -1752,6 +1801,9 @@ pub fn elide_after_last_slash(url: &str, min_chars: usize, head: usize, tail: us
 }
 
 fn redact_key(url: &str) -> String {
+    if crate::managed::enabled() {
+        return "[redacted]".into();
+    }
     // Find last '/' and keep first 4 + last 4 of whatever follows.
     let elided = elide_after_last_slash(url, 12, 4, 4);
     if elided != url {
@@ -2347,6 +2399,58 @@ mod tests {
         assert!(url.starts_with("rtmps://"), "kick must use rtmps: {url}");
         assert!(url.ends_with("/app/sk_test_key"));
         assert!(d.is_well_formed());
+    }
+
+    #[test]
+    fn managed_multi_segment_server_appends_the_separate_key() {
+        let d = Destination {
+            id: "custom".into(),
+            name: "Custom".into(),
+            enabled: true,
+            platform: "custom".into(),
+            stream_key: "separate-key".into(),
+            custom_egress_url: "rtmp://host/group/app".into(),
+            twitch_ingest: String::new(),
+            youtube_ingest: String::new(),
+            vod_audio: false,
+            vod_audio_inject_eb: false,
+            stream_format: "horizontal".into(),
+            audio_track: "main".into(),
+        };
+        let resolved = d.egress_url_for_mode(true).unwrap();
+        let parsed = crate::rtmp::client::EgressUrl::parse(&resolved).unwrap();
+        assert_eq!(parsed.app, "group/app");
+        assert_eq!(parsed.stream_key, "separate-key");
+        assert_eq!(d.egress_url_for_mode(false).unwrap(), d.custom_egress_url);
+        let missing_key = Destination {
+            stream_key: String::new(),
+            ..d.clone()
+        };
+        assert!(missing_key.egress_url_for_mode(true).is_none());
+        assert_eq!(
+            missing_key.egress_url_for_mode(false).unwrap(),
+            d.custom_egress_url
+        );
+        let kick = Destination {
+            platform: "kick".into(),
+            custom_egress_url: "rtmps://host".into(),
+            ..d
+        };
+        assert_eq!(
+            kick.egress_url_for_mode(true).unwrap(),
+            "rtmps://host/app/separate-key"
+        );
+    }
+
+    #[test]
+    fn standalone_disabled_invalid_destinations_still_fail_validation() {
+        let mut settings = Settings::from_text(
+            "destination.0.name=Disabled\ndestination.0.enabled=false\ndestination.0.platform=custom\n",
+        );
+        assert_eq!(settings.destinations.len(), 1);
+        assert!(!settings.validate().is_empty());
+        settings.destinations[0].enabled = true;
+        assert!(!settings.validate().is_empty());
     }
 
     #[test]

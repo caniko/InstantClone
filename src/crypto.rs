@@ -94,7 +94,7 @@ pub fn os_random(buf: &mut [u8]) {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Security::Cryptography::{
-            BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
         };
         // SAFETY: null algorithm handle is valid with USE_SYSTEM_PREFERRED_RNG;
         // buffer + length describe a live, writable slice.

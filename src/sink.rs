@@ -28,7 +28,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, split};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 

@@ -14,6 +14,10 @@
 //! flip it on in System → Advanced diagnostics, reproduce, and send
 //! the file. `INSTANTCLONE_NO_TRACE=1` is a separate hard-kill that
 //! disables the whole subsystem regardless of the runtime atomic.
+//! Managed mode retains event categories and timing only: detail strings may
+//! contain credential-file endpoints or credentials echoed by a remote server.
+//! Each managed instance uses `<CONFIG_PATH>.trace.log` so its writer and cap
+//! remain isolated even when landscape and portrait share a working directory.
 //!
 //! Writes are protected by a mutex; the hot path is a single locked
 //! `writeln!` per event, which at typical ~30 fps is ~3000 lines / s on
@@ -26,8 +30,8 @@ use crate::sync::Mutex;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Hard cap on how much trace we'll write before auto-disabling. The
@@ -43,6 +47,7 @@ const MAX_TRACE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
 struct TraceState {
     file: Mutex<BufWriter<std::fs::File>>,
     start: Instant,
+    managed: bool,
     /// Approximate bytes written since process start. We bump this by
     /// the line length on every `log()` call (atomic add, no mutex)
     /// and check against `MAX_TRACE_BYTES`. Approximate because we
@@ -84,6 +89,7 @@ pub fn init(path: impl AsRef<Path>) {
     let _ = STATE.set(TraceState {
         file: Mutex::new(BufWriter::with_capacity(64 * 1024, file)),
         start: Instant::now(),
+        managed: crate::managed::enabled(),
         bytes_written: AtomicU64::new(0),
     });
     log("session", &format!("trace started at {}", path.display()));
@@ -110,6 +116,14 @@ pub fn log(category: &str, msg: &str) {
     }
     let Some(s) = STATE.get() else {
         return;
+    };
+    // Apply the policy at the writer boundary, including AMF responses and
+    // provider errors. Individual callers cannot reliably identify credentials
+    // echoed by a remote peer or every component of a secret server URL.
+    let msg = if s.managed {
+        "managed detail redacted"
+    } else {
+        msg
     };
     let ms = s.start.elapsed().as_secs_f64() * 1000.0;
     // Approximate-but-cheap size cap. We bump the counter by an

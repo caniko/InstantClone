@@ -188,6 +188,12 @@ Connection: close
     // `path` here still carries the `?...` suffix.
     let bare_path = path.split_once('?').map(|(p, _)| p).unwrap_or(path);
 
+    if !crate::managed::request_allowed(method, bare_path) {
+        write_simple(&mut sock, "403 Forbidden", "application/json",
+            r#"{"ok":false,"error":"Managed by Nix/systemd; change declarative configuration or use systemctl --user."}"#, "").await?;
+        return Ok(());
+    }
+
     // Request body: only POST routes (the config form, login, the auth
     // mutations) consume one, so we read a body for POST alone. A GET or HEAD
     // that advertises a large Content-Length therefore never makes us allocate
@@ -243,6 +249,45 @@ Connection: close
         AuthDecision::Handled => return Ok(()),
         AuthDecision::Allow { cookie, is_admin } => (cookie, is_admin),
     };
+
+    if crate::managed::enabled() {
+        if method == "GET" && (bare_path == "/" || bare_path == "/dock") {
+            write_simple(
+                &mut sock,
+                "200 OK",
+                "text/html; charset=utf-8",
+                include_str!("managed-desk.html"),
+                &dock_set_cookie,
+            )
+            .await?;
+            return Ok(());
+        }
+        if method == "GET" && bare_path == "/desk/app.js" {
+            write_simple(
+                &mut sock,
+                "200 OK",
+                "text/javascript; charset=utf-8",
+                include_str!("managed-desk.js"),
+                &dock_set_cookie,
+            )
+            .await?;
+            return Ok(());
+        }
+        if bare_path.starts_with("/desk/") {
+            let desk_settings = settings.borrow().clone();
+            let (status, json) =
+                crate::managed::desk_request(method, bare_path, body, &desk_settings).await;
+            write_simple(
+                &mut sock,
+                status,
+                "application/json",
+                &json,
+                &dock_set_cookie,
+            )
+            .await?;
+            return Ok(());
+        }
+    }
 
     // Fast-path: static, pre-gzipped dashboard + dock. These two pages
     // dominate the binary (~125 KB raw); shipping only the gz blob saves
@@ -386,7 +431,10 @@ Connection: close
     };
     let resp = format!(
         "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Cache-Control: no-store\r\nConnection: close\r\n\r\n",
-        status, ctype, payload.len(), acao
+        status,
+        ctype,
+        payload.len(),
+        acao
     );
     sock.write_all(resp.as_bytes()).await?;
     sock.write_all(payload.as_bytes()).await?;
@@ -755,11 +803,12 @@ async fn route(
         ("GET", "/config") => (
             "200 OK",
             "application/json",
-            // A dock-token caller (is_admin == false) gets the config with the
-            // raw ingest key and dock token blanked; a full session gets them.
-            settings
-                .borrow()
-                .to_json(crate::autostart::is_enabled(), is_admin),
+            // Service-provisioned credentials stay private in managed mode,
+            // including anonymous dashboards and administrator sessions.
+            settings.borrow().to_json(
+                crate::autostart::is_enabled(),
+                is_admin && !crate::managed::enabled(),
+            ),
         ),
         ("GET", "/docks") => dock_list_json(settings),
         ("GET", "/platforms") => ("200 OK", "application/json", platforms_json()),
@@ -1312,7 +1361,7 @@ fn state_json(
         crate::h264::detect_vertical_primary_track(&ctrl.ring.video_seq_headers.lock()).is_some();
 
     format!(
-        r#"{{"phase":"{ph}","armed_delay_ms":{ad},"target_delay_ms":{td},"current_delay_ms":{cd},"buffer_fill_ms":{bf},"buffer_target_ms":{btm},"buffer_capacity_ms_est":{bc},"ingest_alive":{ia},"egress_alive":{ea},"destinations_alive":{dla},"destinations_total":{dlt},"buffer_building":{bb},"configured":{cfg},"obs_url":"{ou}","webhook_set":{ws},"video_codec":"{vc}","audio_codec":"{ac}","multitrack_video":{mtv},"multitrack_audio":{mta},"vertical_present":{vp},"cpu_pct":{cp:.2},"rss_bytes":{rb},"uptime_secs":{up},"publisher_token":{pt},"consumer_lag":{cl},"backpressure":{bp},"safe_cut_pending":{scp},"safe_cut_remaining_ms":{scr},"compat_warning":{cw},"hotkey_conflicts":[{hkc}],"last_action":{la},"stats":{{"tags_sent":{ts},"bytes_sent":{bs},"cuts":{cu},"ingest_disconnects":{id},"egress_reconnects":{er},"bitrate_kbps":{br}}},"destinations":[{dl}]}}"#,
+        r#"{{"phase":"{ph}","armed_delay_ms":{ad},"target_delay_ms":{td},"current_delay_ms":{cd},"buffer_fill_ms":{bf},"buffer_target_ms":{btm},"buffer_capacity_ms_est":{bc},"ingest_alive":{ia},"ingest_key_set":{iks},"egress_alive":{ea},"destinations_alive":{dla},"destinations_total":{dlt},"buffer_building":{bb},"configured":{cfg},"obs_url":"{ou}","webhook_set":{ws},"video_codec":"{vc}","audio_codec":"{ac}","multitrack_video":{mtv},"multitrack_audio":{mta},"vertical_present":{vp},"cpu_pct":{cp:.2},"rss_bytes":{rb},"uptime_secs":{up},"publisher_token":{pt},"consumer_lag":{cl},"backpressure":{bp},"safe_cut_pending":{scp},"safe_cut_remaining_ms":{scr},"compat_warning":{cw},"hotkey_conflicts":[{hkc}],"last_action":{la},"stats":{{"tags_sent":{ts},"bytes_sent":{bs},"cuts":{cu},"ingest_disconnects":{id},"egress_reconnects":{er},"bitrate_kbps":{br}}},"destinations":[{dl}]}}"#,
         ph = ctrl.phase(),
         scp = ctrl.safe_cut_pending(),
         scr = ctrl.safe_cut_remaining_ms(),
@@ -1346,6 +1395,7 @@ fn state_json(
         btm = ctrl.target_buffer_ms(),
         bc = max_buffer_ms,
         ia = ctrl.ingest_alive(),
+        iks = !s.ingest_key.is_empty(),
         ea = ctrl.egress_alive(),
         dla = alive_count,
         dlt = total_count,
@@ -2904,7 +2954,7 @@ async fn test_egress(
                     r#"{{"ok":false,"error":"{}"}}"#,
                     json_escape(&e.to_string())
                 ),
-            )
+            );
         }
     };
     // DNS + TCP connect with 3 s timeout. We deliberately don't run the
@@ -3326,7 +3376,7 @@ fn destinations_json(ctrl: &Controller, settings: &Arc<watch::Sender<Settings>>)
             // form needs it to populate the input field. Anyone reading this
             // endpoint already has localhost access and can read the plaintext
             // config file directly, so this doesn't expand the risk surface.
-            cu = json_escape_quoted(&d.custom_egress_url),
+            cu = json_escape_quoted(if crate::managed::enabled() { "" } else { &d.custom_egress_url }),
             ti = json_escape_quoted(&d.twitch_ingest),
             yi = json_escape_quoted(&d.youtube_ingest),
             va = d.vod_audio,
@@ -3352,6 +3402,9 @@ fn destinations_json(ctrl: &Controller, settings: &Arc<watch::Sender<Settings>>)
 }
 
 fn redact_url(url: &str) -> String {
+    if crate::managed::enabled() {
+        return "[redacted]".into();
+    }
     crate::config::elide_after_last_slash(url, 12, 4, 4)
 }
 
@@ -3692,7 +3745,7 @@ fn serve_overlay_file(
                 "404 Not Found",
                 "text/plain; charset=utf-8",
                 format!("overlay '{}' not found in {}", name, dir.display()),
-            )
+            );
         }
     };
     let canon_dir = match dir.canonicalize() {
@@ -3704,7 +3757,7 @@ fn serve_overlay_file(
                 "500 Internal Server Error",
                 "text/plain; charset=utf-8",
                 "overlays_dir is misconfigured".into(),
-            )
+            );
         }
     };
     if !canon_path.starts_with(&canon_dir) {
@@ -4045,6 +4098,9 @@ enum Access {
 }
 
 fn classify_access(method: &str, path: &str) -> Access {
+    if crate::managed_routes::control(method, path) {
+        return Access::Control;
+    }
     if path == "/login" {
         return Access::Public;
     }
@@ -4191,7 +4247,11 @@ async fn write_simple(
 ) -> io::Result<()> {
     let resp = format!(
         "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Cache-Control: no-store\r\nConnection: close\r\n\r\n{}",
-        status, ctype, body.len(), extra_headers, body
+        status,
+        ctype,
+        body.len(),
+        extra_headers,
+        body
     );
     sock.write_all(resp.as_bytes()).await
 }
@@ -4834,6 +4894,28 @@ mod tests {
     /// delay. `/state` is Control, and Control is arm / activate / cut /
     /// go-live - so pointing overlays at it, or widening it to reach them,
     /// would have turned a picture into a way to cut someone's stream.
+    #[test]
+    fn desk_control_access_is_exact_and_never_admin_mutation() {
+        for (method, path) in [
+            ("GET", "/desk/app.js"),
+            ("GET", "/desk/info"),
+            ("GET", "/desk/landscape/state"),
+            ("GET", "/desk/portrait/destinations"),
+            ("POST", "/desk/portrait/arm"),
+            ("POST", "/desk/landscape/cancel-cut"),
+        ] {
+            assert_eq!(classify_access(method, path), Access::Control);
+        }
+        for (method, path) in [
+            ("POST", "/desk/info"),
+            ("GET", "/desk/landscape/config"),
+            ("POST", "/desk/portrait/destinations"),
+            ("POST", "/desk/landscape/app/restart"),
+        ] {
+            assert_eq!(classify_access(method, path), Access::Admin);
+        }
+    }
+
     #[test]
     fn the_overlay_feed_is_readable_but_not_a_control_path() {
         assert_eq!(classify_access("GET", "/overlay-state"), Access::Public);

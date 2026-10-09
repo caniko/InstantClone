@@ -1,12 +1,76 @@
 """Startup path validation must reject before mutating any managed directory."""
+import http.client
+import json
 import os
 import subprocess
 import sys
 import tempfile
-import http.client
-import json
 from pathlib import Path
+
 from runtime_dual import port, stop, wait
+
+
+def disabled_credentials(binary, root, runtime):
+    template = root / 'disabled-template'
+    config = runtime / 'disabled-instance/config'
+    key, server = root / 'retired.key', root / 'retired.server'
+    key.write_text('disposable-retired-key')
+    server.write_text('rtmp://127.0.0.1:1/live')
+    key.chmod(0o600)
+    server.chmod(0o600)
+    env = os.environ | {'INSTANTCLONE_MANAGED':'1','INSTANTCLONE_TEMPLATE':str(template),
+                        'XDG_RUNTIME_DIR':str(runtime),'CONFIG_PATH':str(config)}
+    cases = [
+        (root / 'missing-key', root / 'missing-server', 'before'),
+        (key, root / 'missing-server', 'after'),
+        (key, server, 'override'),
+    ]
+    for key_path, server_path, placement in cases:
+        web, ingest = port(), port()
+        directives = (f'destination.0.stream_key_file={key_path}\n'
+                      f'destination.0.custom_egress_url_file={server_path}\n')
+        declarations = 'destination.0.enabled=false\n'
+        if placement == 'before':
+            declarations += directives
+        else:
+            declarations = ('destination.0.enabled=true\n' if placement == 'override' else '') + directives + declarations
+        text = (f'configured=true\nbuffer_path={root}/disabled-cache/stream.buf\n'
+                f'overlays_dir={root}/disabled-overlays\nweb_port={web}\ningest_port={ingest}\nbuffer_mb=50\n'
+                '# comments without equals and blank lines remain valid\n\n'
+                'update_check_enabled=false\nopen_dashboard_on_launch=false\n'
+                'destination.0.name=Retired\ndestination.0.id=retired\ndestination.0.platform=custom\n'
+                + declarations)
+        template.write_text(text)
+        with (root / f'disabled-{placement}.log').open('wb') as log:
+            proc = subprocess.Popen([binary,'--no-browser'],env=env,cwd=root,stdout=log,stderr=log)
+        try:
+            def fetch(path, web=web):
+                connection = http.client.HTTPConnection('127.0.0.1',web,timeout=2)
+                try:
+                    connection.request('GET',path)
+                    response = connection.getresponse()
+                    assert response.status == 200
+                    return json.loads(response.read())
+                finally:
+                    connection.close()
+            wait(lambda: fetch('/state').get('destinations'), 5)
+            destination = fetch('/state')['destinations'][0]
+            assert destination['enabled'] is False and destination['alive'] is False
+            assert fetch('/config')['destinations'][0]['stream_key_set'] is False
+            rendered = config.read_text()
+            assert 'stream_key_file=' not in rendered and 'custom_egress_url_file=' not in rendered
+            fields = dict(line.split('=', 1) for line in rendered.splitlines() if '=' in line and not line.startswith('#'))
+            assert not fields.get('destination.0.stream_key') and not fields.get('destination.0.custom_egress_url')
+            assert 'disposable-retired-key' not in rendered and 'rtmp://127.0.0.1:1/live' not in rendered
+            assert proc.poll() is None
+        finally:
+            stop(proc)
+        if not key_path.exists() or not server_path.exists():
+            template.write_text(text + 'destination.0.enabled=true\n')
+            result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
+            assert result.returncode != 0 and b'secret is missing or unreadable' in result.stderr
+            assert config.read_text() == rendered, 'failed re-enable overwrote the valid runtime config'
+    print('PASS: final disabled destinations omit retained credentials regardless of declaration order; re-enable requires secrets')
 
 
 def run(binary):
@@ -37,7 +101,7 @@ def run(binary):
             env = os.environ | {'INSTANTCLONE_MANAGED':'1','INSTANTCLONE_TEMPLATE':str(template),
                                 'XDG_RUNTIME_DIR':str(runtime),'CONFIG_PATH':str(config)}
             result = subprocess.run([binary,'--no-browser'],env=env,cwd=shared,
-                                    capture_output=True,text=True,timeout=5)
+                                    capture_output=True,text=True,timeout=5,check=False)
             assert result.returncode != 0, 'unsafe managed path was accepted'
             assert shared.stat().st_mode & 0o777 == 0o755, 'shared directory mode changed'
             for untouched in ['runtime/new-instance','new-cache','new-overlays','escape']:
@@ -50,7 +114,7 @@ def run(binary):
             env = os.environ | {'INSTANTCLONE_MANAGED':'1','INSTANTCLONE_TEMPLATE':str(template),
                                 'XDG_RUNTIME_DIR':str(runtime),'CONFIG_PATH':str(config)}
             assert subprocess.run([binary,'--no-browser'],env=env,cwd=shared,
-                                  capture_output=True,timeout=5).returncode != 0
+                                  capture_output=True,timeout=5,check=False).returncode != 0
             assert shared.stat().st_mode & 0o777 == 0o755
             assert not (root / 'new-cache').exists()
         print('PASS: relative/traversing/symlink/shared paths rejected before directory creation or chmod')
@@ -60,7 +124,7 @@ def run(binary):
                             'destination.0.custom_egress_url=rtmp://host.invalid/group/app\n')
         env = os.environ | {'INSTANTCLONE_MANAGED':'1','INSTANTCLONE_TEMPLATE':str(template),
                             'XDG_RUNTIME_DIR':str(runtime),'CONFIG_PATH':str(runtime / 'instance/config')}
-        result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5)
+        result = subprocess.run([binary,'--no-browser'],env=env,cwd=root,capture_output=True,timeout=5,check=False)
         assert result.returncode != 0, 'multi-segment server with no separate key accepted'
         assert b'Missing key' in result.stderr, 'missing-key diagnostic lost destination identity'
         assert b'separate stream key required' in result.stderr
@@ -91,6 +155,7 @@ def run(binary):
         finally:
             stop(proc)
         print('PASS: disabled managed metadata starts without keys or an egress connection')
+        disabled_credentials(binary, root, runtime)
 
 
 if __name__ == '__main__':

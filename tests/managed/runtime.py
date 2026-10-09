@@ -123,6 +123,10 @@ def run(binary, store_template, package_derivation):
         try:
             original_template = template.read_text()
             declarations = [
+                ('web_port 8080', b'malformed managed declaration'),
+                ('destination.0.name missing-equals', b'malformed managed declaration'),
+                ('=malformed-private-value', b'malformed managed declaration'),
+                (' \t = malformed-private-value', b'malformed managed declaration'),
                 ('web_port=0', b'web_port must be > 0'),
                 (f'web_port={ingest}', b'ingest_port and web_port must differ'),
                 ('buffer_mb=1', b'buffer_mb must be at least'),
@@ -164,6 +168,7 @@ def run(binary, store_template, package_derivation):
                 assert result.returncode != 0 and reason in result.stderr, setting
                 assert not config.exists(), 'invalid declaration persisted a sanitized config'
                 assert b'plaintext-test-key' not in result.stderr, 'invalid declaration exposed credential'
+                assert b'malformed-private-value' not in result.stderr, 'malformed declaration echoed its value'
             template.write_text(original_template.replace('destination.0.id=local-0\n', ''))
             result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime,
                                     capture_output=True, timeout=10, check=False)

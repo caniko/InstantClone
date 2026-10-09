@@ -216,12 +216,14 @@ pub fn prepare() -> io::Result<()> {
     let fields: BTreeMap<_, _> = text
         .lines()
         .map(str::trim)
-        .filter(|line| !line.starts_with('#'))
-        .filter_map(|line| {
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
             line.split_once('=')
                 .map(|(key, value)| (key.trim(), value.trim()))
+                .filter(|(key, _)| !key.is_empty())
+                .ok_or_else(|| invalid("InstantClone: malformed managed declaration"))
         })
-        .collect();
+        .collect::<io::Result<_>>()?;
     // Reject credentials in the non-secret source, even on disabled destinations
     // or alongside a file directive. Only runtime credential reads may render keys.
     if fields.keys().any(|key| {
@@ -399,6 +401,16 @@ pub fn prepare() -> io::Result<()> {
                 }
                 rendered.push_str(&format!("dashboard_password_hash={hash}\n"));
                 continue;
+            }
+            // Last declaration wins, as in Settings. A disabled destination may
+            // retain file references after its credentials have been retired.
+            if let Some(prefix) = key
+                .strip_suffix(".stream_key_file")
+                .or_else(|| key.strip_suffix(".custom_egress_url_file"))
+            {
+                if fields.get(format!("{prefix}.enabled").as_str()).copied() == Some("false") {
+                    continue;
+                }
             }
             if let Some(prefix) = key.strip_suffix(".stream_key_file") {
                 let name = fields

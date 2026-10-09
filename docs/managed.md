@@ -68,6 +68,12 @@ authentication/control-token pairing fails before persisting runtime settings.
 Direct `dock_token` and `dashboard_password_hash` fields are rejected, even when
 empty or declared alongside a credential-file directive in either order. Only
 validated file credentials can supply the runtime authentication values.
+Nonblank, non-comment lines must be `key=value` declarations with a nonempty key;
+malformed declarations fail before credentials are read or runtime state is written.
+Disabled destinations may retain `stream_key_file` and `custom_egress_url_file`
+references after those credentials are removed. The final `enabled=false`
+declaration skips both file reads and credential rendering, regardless of line
+order. Re-enabling the destination requires its credentials again.
 Discord notifications use `discord_webhook_url_file`, pointing at a private
 user-owned file containing the HTTPS webhook URL. Direct `discord_webhook_url`
 declarations are rejected, including empty fields. The URL is rendered only into

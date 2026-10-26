@@ -139,6 +139,9 @@ Setup reads `ingest_key_set` from fresh telemetry. Protected ingests instruct OB
 to use that program's provisioned key without displaying it; unprotected ingests
 accept any non-empty key. Credential errors are shown separately from outages,
 and stale or unauthenticated program controls remain paused.
+OBS's Enhanced Broadcasting handshake (`POST /obs/multitrack-config`) stays
+available so VOD-audio destinations can register their publish token; OBS
+registration and setup endpoints remain declarative.
 
 The same-origin bridge only contacts fixed loopback ports and exposes state,
 destination summaries and supported delay actions. Credentials and endpoint URLs

@@ -880,9 +880,10 @@ fn desk_response(response: &str) -> (&'static str, String) {
 /// Keep delay controls, private overlay files and docks usable. Configuration,
 /// updates, OBS integration, process launching and lifecycle belong to Nix.
 pub fn request_allowed(method: &str, path: &str) -> bool {
-    if !enabled() {
-        return true;
-    }
+    !enabled() || managed_request_allowed(method, path)
+}
+
+fn managed_request_allowed(method: &str, path: &str) -> bool {
     if path.starts_with("/desk/") {
         return crate::managed_routes::control(method, path);
     }
@@ -924,6 +925,9 @@ pub fn request_allowed(method: &str, path: &str) -> bool {
                     | "/cut-after"
                     | "/cut-after/cancel"
                     | "/logs/clear"
+                    // OBS's Enhanced Broadcasting handshake registers the
+                    // publish token; the handler checks the ingest key itself.
+                    | "/obs/multitrack-config"
             ) || path.starts_with("/docks/")
                 || path.starts_with("/overlays/")
         }
@@ -934,6 +938,13 @@ pub fn request_allowed(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn managed_mode_keeps_the_obs_multitrack_handshake() {
+        assert!(managed_request_allowed("POST", "/obs/multitrack-config"));
+        assert!(!managed_request_allowed("POST", "/obs/register"));
+        assert!(!managed_request_allowed("POST", "/config"));
+    }
+
     #[test]
     fn accepts_only_applied_template_keys() {
         for key in [

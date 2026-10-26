@@ -230,6 +230,67 @@ mod tests {
         assert!(!a.validate_session(&t));
     }
 
+    #[tokio::test]
+    async fn expired_session_is_rejected_over_http() {
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let path = std::env::temp_dir().join(format!("ic-session-{}.buf", crypto::random_token()));
+        let ring = Arc::new(crate::buffer::DiskRing::create(&path, 4 * 1024 * 1024).unwrap());
+        let ctrl = Arc::new(crate::controller::Controller::new(ring, 0));
+        let mut settings = crate::config::Settings::defaults();
+        settings.dashboard_password_hash = "nonempty-enables-auth".into();
+        let settings = Arc::new(tokio::sync::watch::channel(settings).0);
+        let auth = Arc::new(AuthState::new());
+        let live = auth.create_session();
+        let expired = auth.create_session();
+        auth.sessions
+            .lock()
+            .insert(expired.clone(), Instant::now() - Duration::from_secs(1));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let server = tokio::spawn(crate::web::run(
+            addr.to_string(),
+            ctrl,
+            settings,
+            path.with_extension("config"),
+            auth,
+        ));
+        for (token, route, status) in [
+            (&live, "/state", "200 OK"),
+            (&expired, "/state", "401 Unauthorized"),
+            (&expired, "/desk/info", "401 Unauthorized"),
+        ] {
+            let mut socket = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    assert!(!server.is_finished(), "HTTP server exited before accepting");
+                    match tokio::net::TcpStream::connect(addr).await {
+                        Ok(socket) => break socket,
+                        Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            let request = format!(
+                "GET {route} HTTP/1.1\r\nHost: {addr}\r\nCookie: ic_session={token}\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(request.as_bytes()).await.unwrap();
+            let mut response = String::new();
+            tokio::time::timeout(Duration::from_secs(5), socket.read_to_string(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {status}\r\n")),
+                "{route}: {response}"
+            );
+        }
+        server.abort();
+        let _ = server.await;
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn revoke_all_drops_every_session() {
         let a = AuthState::new();

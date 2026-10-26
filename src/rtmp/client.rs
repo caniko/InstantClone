@@ -15,7 +15,7 @@ use bytes::BytesMut;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{split, AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf, split};
 use tokio::net::TcpStream;
 
 pub struct EgressUrl {

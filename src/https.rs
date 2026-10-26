@@ -23,8 +23,8 @@
 //!
 //! Use [`https_agent`] everywhere we need to call out to an HTTPS URL.
 
-use ureq::tls::{TlsConfig, TlsProvider};
 use ureq::Agent;
+use ureq::tls::{TlsConfig, TlsProvider};
 
 /// Build a ready-to-use ureq `Agent` with native-tls selected as the
 /// TLS provider and `http_status_as_error` disabled so callers retain

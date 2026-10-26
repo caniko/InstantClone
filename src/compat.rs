@@ -12,7 +12,7 @@
 //! Everything is a pure function of (measured params, destinations), so
 //! the rules are unit-testable without a live stream.
 
-use crate::config::{platform_label, Destination};
+use crate::config::{Destination, platform_label};
 use crate::h264::VideoCodec;
 
 /// Measured parameters of the current publisher session. Zeroed between

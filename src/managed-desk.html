@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Broadcast Desk</title>
+<style>
+:root{color-scheme:dark;--bg:#101317;--panel:#191e25;--line:#343c47;--muted:#b0bac8;--good:#8cdeb5;--warn:#ffd080;--bad:#ffaaaa}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f1f4f8;font:14px/1.5 system-ui,sans-serif}main{max-width:780px;margin:auto;padding:16px}header{display:flex;align-items:center;justify-content:space-between;gap:12px}h1{font-size:20px;margin:0}h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:22px 0 10px}h3{font-size:15px;margin:0}p{margin:6px 0}.muted,small{color:var(--muted)}.program{padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin:8px 0}.program-head{display:flex;justify-content:space-between;gap:8px}.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}.status{font-weight:600}.notice{border-left:3px solid var(--warn);padding:8px 12px;background:var(--panel)}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;color:var(--muted);font-weight:500}td,th{padding:10px 5px;border-bottom:1px solid var(--line);vertical-align:top}td small{display:block;font-size:11px}button,select,input{font:inherit;color:inherit;background:#252d38;border:1px solid #586779;border-radius:6px;padding:9px;min-height:40px}button{cursor:pointer}button:hover{background:#334053}button:disabled{opacity:.55;cursor:default}button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #a9ceff;outline-offset:3px}.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.row input{width:80px}.actions{display:grid;gap:8px;margin-top:10px}.danger{border-color:#ba7272}a{color:#b8d6ff}details{margin-top:24px;border-top:1px solid var(--line);padding-top:14px}summary{cursor:pointer;font-weight:600}.setup{padding-top:12px}code{overflow-wrap:anywhere;color:#d1e5ff}#feedback{white-space:pre-line}#summary{margin:12px 0}#attention:empty{display:none}@media(min-width:600px){#programs{display:grid;grid-template-columns:1fr 1fr;gap:12px}main{padding:24px}}
+</style>
+<style>th small{display:block;font-weight:400;font-size:11px}.program{padding:10px}td,th{padding:8px 5px}</style>
+<main>
+<header><h1>Broadcast Desk</h1><span class="muted">H + V</span></header>
+<p id="summary" class="muted" role="status">Connecting to local relays…</p>
+<h2>Programs</h2><div id="programs"></div>
+<h2>Destinations</h2>
+<table><caption class="muted" style="text-align:left">Transport status · provider broadcast not confirmed</caption><thead><tr><th scope="col">Destination</th><th scope="col">Landscape</th><th scope="col">Portrait</th></tr></thead><tbody id="destinations"></tbody></table>
+<h2>Attention</h2><div id="attention"></div>
+<h2>Delay controls</h2>
+<div class="row"><label for="scope">Program</label><select id="scope"><option value="landscape">Landscape</option><option value="portrait">Portrait</option></select></div>
+<p id="delay" class="muted">Waiting for current state</p>
+<div class="row"><label for="seconds">Delay</label><input id="seconds" type="number" min="1" max="600" step="1" value="15"><span class="muted">seconds</span></div>
+<div class="actions">
+<button data-action="arm">Prepare delay</button><button data-action="activate">Apply prepared delay</button><button data-action="disarm">Cancel preparation</button>
+<button data-action="cut-after">Return to real time after marked footage airs</button>
+<button data-action="cancel-cut">Cancel scheduled return to real time</button>
+<button data-action="stop" class="danger">Return to real time now…</button>
+</div>
+<p id="feedback" role="status" aria-live="polite"></p>
+<details id="diagnostics"><summary>Setup &amp; diagnostics</summary><div class="setup">
+<p>This desk monitors two independent encoded programs. It does not start or stop your OBS broadcast.</p>
+<div id="setup"></div>
+<p>Persistent settings and credentials are managed by Home Manager and agenix. Changes require rekeying and deployment before they take effect.</p>
+<p>Prepare encrypted credentials with your configuration manager. Define each program’s destinations independently, then deploy both service configurations.</p>
+<p>Relay recovery: inspect <code>systemctl --user status instantclone</code> or <code>instantclone-vertical</code>. Restarting a relay interrupts that program’s destinations.</p>
+<p>Atlas/Murph contribution health and OBS encoder metrics are not available from the relay. Inspect OBS for source loss, audio sync and dropped frames.</p>
+</div></details>
+</main>
+<script src="/desk/app.js"></script>
+</html>

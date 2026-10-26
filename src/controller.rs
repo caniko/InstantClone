@@ -14,9 +14,9 @@ use crate::h264::{AudioCodec, VideoCodec};
 use crate::rtmp::client::{EgressClient, EgressSink, EgressUrl};
 use std::collections::HashMap;
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 
@@ -2123,14 +2123,19 @@ pub async fn run_egress(
             tokio::time::sleep(Duration::from_millis(500)).await;
             continue;
         }
-        eprintln!(
-            "[egress {}] connecting to {}:{}/{}",
-            label, parsed.host, parsed.port, parsed.app
-        );
-        ctrl.log(format!(
-            "[{}] connecting to {}:{}",
-            label, parsed.host, parsed.port
-        ));
+        if crate::managed::enabled() {
+            eprintln!("[egress {}] connecting (endpoint redacted)", label);
+            ctrl.log(format!("[{}] connecting (endpoint redacted)", label));
+        } else {
+            eprintln!(
+                "[egress {}] connecting to {}:{}/{}",
+                label, parsed.host, parsed.port, parsed.app
+            );
+            ctrl.log(format!(
+                "[{}] connecting to {}:{}",
+                label, parsed.host, parsed.port
+            ));
+        }
         match EgressClient::connect(&parsed).await {
             Ok(client) => {
                 backoff = Duration::from_secs(1);
@@ -2198,6 +2203,11 @@ pub async fn run_egress(
 /// Replace any occurrence of `secret` (case-sensitive) in `text` with a
 /// short redaction so it doesn't end up in logs or webhook payloads.
 fn scrub_secret(text: &str, secret: &str) -> String {
+    // Remote errors can echo a transformed/partial key (e.g. YouTube backup).
+    // Do not send any server-controlled error details to the managed journal.
+    if crate::managed::enabled() {
+        return "remote RTMP error (details suppressed in managed mode)".into();
+    }
     // Characters, not bytes. A stream key is whatever the user pasted, and
     // this runs on the egress error path - so a byte-offset slice here aborts
     // the process (`panic = "abort"`) at the exact moment a destination is
@@ -2801,8 +2811,16 @@ async fn apply_cut(
             "CUT",
             &format!(
                 "dest={} dir={} seq={}→{} in_ts={}→{} delta_ms={} out_ts_base=0x{:08x}→0x{:08x} gen={}",
-                dest.id, direction, prev_seq, new_seq, prev_ts, new_ts, delta_ms,
-                state.output_ts_base, new_output_ts_base, gen,
+                dest.id,
+                direction,
+                prev_seq,
+                new_seq,
+                prev_ts,
+                new_ts,
+                delta_ms,
+                state.output_ts_base,
+                new_output_ts_base,
+                gen,
             ),
         );
     }

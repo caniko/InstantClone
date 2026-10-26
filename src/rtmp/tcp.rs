@@ -145,7 +145,7 @@ pub fn set_aggressive_keepalive(_sock: &TcpStream) -> io::Result<()> {
 #[cfg(target_os = "windows")]
 pub fn set_send_buffer(sock: &TcpStream, bytes: u32) -> io::Result<()> {
     use std::os::windows::io::AsRawSocket;
-    use windows_sys::Win32::Networking::WinSock::{setsockopt, SOL_SOCKET, SO_SNDBUF};
+    use windows_sys::Win32::Networking::WinSock::{SO_SNDBUF, SOL_SOCKET, setsockopt};
 
     let raw = sock.as_raw_socket() as usize;
     let val = bytes as i32;
@@ -198,7 +198,7 @@ pub fn set_send_buffer(_sock: &TcpStream, _bytes: u32) -> io::Result<()> {
 #[cfg(target_os = "windows")]
 pub fn set_v6_only(sock: &tokio::net::TcpSocket) -> io::Result<()> {
     use std::os::windows::io::AsRawSocket;
-    use windows_sys::Win32::Networking::WinSock::{setsockopt, IPPROTO_IPV6, IPV6_V6ONLY};
+    use windows_sys::Win32::Networking::WinSock::{IPPROTO_IPV6, IPV6_V6ONLY, setsockopt};
 
     let on: i32 = 1;
     let rc = unsafe {

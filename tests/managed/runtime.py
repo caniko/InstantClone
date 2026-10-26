@@ -140,6 +140,7 @@ def run(binary, store_template, package_derivation):
                 ('destination.1.id=local-0', b'duplicate destination id'),
                 ('destination.1.id=', b'explicit nonempty id required'),
                 ('destination.0.twitch_ingest=not-a-region', b'invalid declared destination.0.twitch_ingest'),
+                ('web_potr=8081', b'unsupported managed declaration web_potr'),
                 ('destination.0.youtube_ingest=backpu', b'invalid declared destination.0.youtube_ingest'),
                 ('destination.2.enabled=false\ndestination.2.id=local-0', b'duplicate destination id'),
                 (f'buffer_path={config}', b'buffer_path must not alias'),

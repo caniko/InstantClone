@@ -28,8 +28,9 @@ also accepts a host-only `rtmps://host[:port]` server and adds `/app`. Userinfo,
 fragments, traversal and empty path segments are rejected without echoing values,
 for both inline servers and credential-file servers.
 
-Managed startup rejects malformed booleans and routing enums instead of selecting
-defaults: booleans are `true` or `false`, destination `stream_format` is
+Managed startup rejects template keys that the relay would ignore, so a typo
+cannot silently keep a default. It also rejects malformed booleans and routing
+enums instead of selecting defaults: booleans are `true` or `false`, destination `stream_format` is
 `horizontal` or `vertical`, `audio_track` is `auto`, `both`, `1` or `2`,
 `youtube_ingest` is empty, `primary` or `backup`, and `twitch_ingest` is empty or
 a listed Twitch region slug.

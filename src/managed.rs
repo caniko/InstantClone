@@ -307,6 +307,12 @@ pub fn prepare() -> io::Result<()> {
                 return Err(invalid("InstantClone: invalid declared destination index"));
             }
         }
+        // Settings ignores unknown keys, so a typo would silently keep a default.
+        if !known_key(key) {
+            return Err(invalid(&format!(
+                "InstantClone: unsupported managed declaration {key}"
+            )));
+        }
         let valid = match *key {
             "ingest_port" | "web_port" => value.parse::<u16>().is_ok(),
             "buffer_mb" => value.parse::<u64>().is_ok(),
@@ -605,6 +611,61 @@ pub fn prepare() -> io::Result<()> {
     result
 }
 
+/// Template keys that Settings applies, plus the managed credential-file forms.
+fn known_key(key: &str) -> bool {
+    if let Some(field) = key
+        .strip_prefix("destination.")
+        .and_then(|rest| rest.split_once('.'))
+        .map(|(_, field)| field)
+    {
+        return matches!(
+            field,
+            "id" | "name"
+                | "enabled"
+                | "platform"
+                | "stream_key_file"
+                | "custom_egress_url"
+                | "custom_egress_url_file"
+                | "twitch_ingest"
+                | "youtube_ingest"
+                | "vod_audio"
+                | "vod_audio_inject_eb"
+                | "stream_format"
+                | "audio_track"
+        );
+    }
+    ["dock.", "hotkey.", "midi.", "profile."]
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+        || matches!(
+            key,
+            "configured"
+                | "platform"
+                | "custom_egress_url"
+                | "ingest_port"
+                | "ingest_bind_all"
+                | "ingest_key_file"
+                | "web_port"
+                | "web_bind_all"
+                | "dashboard_password_hash_file"
+                | "dock_token_file"
+                | "buffer_mb"
+                | "buffer_path"
+                | "target_delay_ms"
+                | "armed_delay_ms"
+                | "discord_webhook_url_file"
+                | "overlays_dir"
+                | "tracing_enabled"
+                | "auto_arm_on_connect"
+                | "auto_activate_when_ready"
+                | "update_check_enabled"
+                | "open_dashboard_on_launch"
+                | "overlays_seeded"
+                | "auto_arm_delay_ms"
+                | "midi_device"
+        )
+}
+
 /// Opens a regular file owned by this user and unreadable by group or others.
 fn open_private(path: &Path) -> io::Result<fs::File> {
     let file = OpenOptions::new()
@@ -873,6 +934,26 @@ pub fn request_allowed(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn accepts_only_applied_template_keys() {
+        for key in [
+            "web_port",
+            "dock_token_file",
+            "destination.3.stream_key_file",
+            "destination.0.custom_egress_url_file",
+            "profile.0.delay_ms",
+        ] {
+            assert!(known_key(key), "{key}");
+        }
+        for key in [
+            "web_potr",
+            "destination.0.stream_kye_file",
+            "destination.0.nmae",
+        ] {
+            assert!(!known_key(key), "{key}");
+        }
+    }
+
     #[test]
     fn preparation_never_chmods_a_shared_directory() {
         let dir =

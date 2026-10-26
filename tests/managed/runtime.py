@@ -79,6 +79,7 @@ def run(binary, store_template, package_derivation):
         encrypted_server = root / 'server.age'
         subprocess.run(['age', '-r', recipient, '-o', str(encrypted_server)], input=(server_url + '\n').encode(), check=True)
         subprocess.run(['age', '-d', '-i', str(identity), '-o', str(server_path), str(encrypted_server)], check=True)
+        server_path.chmod(0o600)
         base = [
             'configured=true', f'ingest_port={ingest}', 'ingest_bind_all=false',
             f'ingest_key_file={ingest_file}', f'dock_token_file={control_file}',
@@ -138,6 +139,8 @@ def run(binary, store_template, package_derivation):
                 ('auto_arm_delay_ms=600001', b'auto_arm_delay_ms'),
                 ('destination.1.id=local-0', b'duplicate destination id'),
                 ('destination.1.id=', b'explicit nonempty id required'),
+                ('destination.0.twitch_ingest=not-a-region', b'invalid declared destination.0.twitch_ingest'),
+                ('destination.0.youtube_ingest=backpu', b'invalid declared destination.0.youtube_ingest'),
                 ('destination.2.enabled=false\ndestination.2.id=local-0', b'duplicate destination id'),
                 (f'buffer_path={config}', b'buffer_path must not alias'),
                 (f'buffer_path={template}', b'buffer_path must not alias'),
@@ -325,7 +328,14 @@ def run(binary, store_template, package_derivation):
                 assert b"destination 'local-1'" in result.stderr
                 first = payload.split(b'\n')[0]
                 assert not first or first not in result.stderr
+            # A FIFO with no writer must fail promptly instead of blocking startup.
+            server_path.unlink()
+            os.mkfifo(server_path, 0o600)
+            result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime, capture_output=True, timeout=10, check=False)
+            assert result.returncode != 0 and b'server-URL secret must be a private' in result.stderr
+            server_path.unlink()
             server_path.write_text(server_url)
+            server_path.chmod(0o600)
             for occupied in [ingest, web]:
                 with socket.socket() as sock:
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

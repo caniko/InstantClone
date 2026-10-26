@@ -117,8 +117,14 @@ fn secret(path: &Path, name: &str) -> io::Result<String> {
 fn server_url(path: &Path, name: &str, platform: &str) -> io::Result<String> {
     let error = |reason| invalid(&format!("InstantClone destination '{name}': {reason}"));
     let mut bytes = Vec::new();
-    fs::File::open(path)
-        .and_then(|file| file.take(4099).read_to_end(&mut bytes))
+    let file = open_private(path).map_err(|e| match e.kind() {
+        io::ErrorKind::InvalidInput => {
+            error("server-URL secret must be a private (0600) file owned by this user")
+        }
+        _ => error("server-URL secret is missing or unreadable"),
+    })?;
+    file.take(4099)
+        .read_to_end(&mut bytes)
         .map_err(|_| error("server-URL secret is missing or unreadable"))?;
     if bytes.ends_with(b"\r\n") {
         bytes.truncate(bytes.len() - 2);
@@ -321,6 +327,11 @@ pub fn prepare() -> io::Result<()> {
                     matches!(*value, "true" | "false")
                 }
                 Some("stream_format") => matches!(*value, "horizontal" | "vertical"),
+                // Unknown selectors would silently route to a different ingest.
+                Some("twitch_ingest") => crate::config::twitch_ingests()
+                    .iter()
+                    .any(|(slug, _)| slug == value),
+                Some("youtube_ingest") => matches!(*value, "" | "primary" | "backup"),
                 Some("audio_track") => matches!(*value, "auto" | "both" | "1" | "2"),
                 _ => true,
             },
@@ -683,7 +694,7 @@ pub async fn desk_request(
             && !(body
                 .strip_prefix("ms=")
                 .and_then(|s| s.parse::<u32>().ok())
-                .is_some_and(|ms| ms <= 600_000)))
+                .is_some_and(|ms| (1..=600_000).contains(&ms))))
     {
         return (
             "400 Bad Request",
@@ -883,6 +894,8 @@ mod tests {
             ("GET", "/desk/portrait/config", ""),
             ("POST", "/desk/landscape/destinations", ""),
             ("POST", "/desk/portrait/arm", "ms=600001"),
+            // Zero disarms; the desk has a separate disarm action.
+            ("POST", "/desk/portrait/arm", "ms=0"),
             ("POST", "/desk/portrait/arm", "ms=1&extra=true"),
         ] {
             assert_eq!(
@@ -937,6 +950,13 @@ mod tests {
             std::env::temp_dir().join(format!("instantclone-server-test-{}", std::process::id()));
         private_dir(&dir).unwrap();
         let path = dir.join("server");
+        fs::write(&path, "rtmp://host/live").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            server_url(&path, "test", "custom").is_err(),
+            "readable server file accepted"
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         for text in [
             "rtmp://host/live",
             "rtmps://host:443/app/",

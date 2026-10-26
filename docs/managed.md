@@ -11,8 +11,8 @@ decrypted credentials using `destination.N.stream_key_file` and optionally
 `ingest_key_file=/path/to/ingest-key`; the provisioned key contains only letters,
 numbers, `-` and `_`. Plaintext is read only at process startup. Direct
 `ingest_key` and `stream_key` fields are rejected, including legacy and disabled entries.
-Stream-key and ingest-key files must be regular user-owned files that group and
-others cannot read (mode `0400` or `0600`).
+Stream-key, ingest-key and server-URL files must be regular user-owned files
+that group and others cannot read (mode `0400` or `0600`).
 Each enabled destination requires an explicit, nonempty, unique `destination.N.id`.
 Disabled destinations that keep an id must not reuse another destination's id.
 Destination indexes must be canonical decimal integers from `0` through `127`;
@@ -30,7 +30,9 @@ for both inline servers and credential-file servers.
 
 Managed startup rejects malformed booleans and routing enums instead of selecting
 defaults: booleans are `true` or `false`, destination `stream_format` is
-`horizontal` or `vertical`, and `audio_track` is `auto`, `both`, `1` or `2`.
+`horizontal` or `vertical`, `audio_track` is `auto`, `both`, `1` or `2`,
+`youtube_ingest` is empty, `primary` or `backup`, and `twitch_ingest` is empty or
+a listed Twitch region slug.
 It also rejects invalid numeric declarations instead of recovering to
 different defaults: ports must be nonzero and distinct, `buffer_mb` must be
 50–1048576, and `target_delay_ms`/`armed_delay_ms` must be at most 600000.

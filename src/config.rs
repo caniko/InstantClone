@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// even applies, OOMing the process. 128 destinations and 256 profiles
 /// are both already absurd for a single streamer.
 pub(crate) const MAX_DESTINATIONS: usize = 128;
-const MAX_PROFILES: usize = 256;
+pub(crate) const MAX_PROFILES: usize = 256;
 /// Ceiling on saved dock layouts (each is one OBS browser dock's widget
 /// arrangement). Persisted server-side so a layout survives OBS clearing
 /// its browser cache; capped so a runaway client can't bloat the config.

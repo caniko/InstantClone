@@ -14,7 +14,8 @@ numbers, `-` and `_`. Plaintext is read only at process startup. Direct
 Stream-key, ingest-key and server-URL files must be regular user-owned files
 that group and others cannot read (mode `0400` or `0600`).
 Each enabled destination requires an explicit, nonempty, unique `destination.N.id`.
-Disabled destinations that keep an id must not reuse another destination's id.
+Disabled destinations must not share an id with another destination, including
+the `destN` id the relay generates when a disabled row omits one.
 Destination indexes must be canonical decimal integers from `0` through `127`;
 out-of-range or malformed indexes fail before credential reads or state creation.
 Configuration and application lifecycle changes belong to the service manager.
@@ -28,8 +29,9 @@ also accepts a host-only `rtmps://host[:port]` server and adds `/app`. Userinfo,
 fragments, traversal and empty path segments are rejected without echoing values,
 for both inline servers and credential-file servers.
 
-Managed startup rejects template keys that the relay would ignore, so a typo
-cannot silently keep a default. It also rejects malformed booleans and routing
+Managed startup rejects template keys that the relay would ignore, including
+unknown fields under `destination.`, `profile.`, `hotkey.`, `midi.` and `dock.`,
+so a typo cannot silently keep a default. It also rejects malformed booleans and routing
 enums instead of selecting defaults: booleans are `true` or `false`, destination `stream_format` is
 `horizontal` or `vertical`, `audio_track` is `auto`, `both`, `1` or `2`,
 `youtube_ingest` is empty, `primary` or `backup`, and `twitch_ingest` is empty or
@@ -40,6 +42,10 @@ different defaults: ports must be nonzero and distinct, `buffer_mb` must be
 `auto_arm_delay_ms` must be 1–600000. SIGTERM and fatal ingest/dashboard listener
 failures use graceful stream teardown and remove the ring file; listener failures
 then report a nonzero exit so the service manager can restart the instance.
+
+Managed relays listen on IPv4 only (`127.0.0.1`, or `0.0.0.0` with a bind-all
+setting). Leave OBS's Settings → Advanced → Network → IP Family on IPv4 or
+IPv4+IPv6; IPv6-only OBS cannot reach the ingest.
 
 Set `XDG_RUNTIME_DIR` to an existing user-owned private directory. `CONFIG_PATH`
 must be in a dedicated subdirectory of it. Managed templates must explicitly

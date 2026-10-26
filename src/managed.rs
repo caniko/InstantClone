@@ -316,6 +316,9 @@ pub fn prepare() -> io::Result<()> {
         let valid = match *key {
             "ingest_port" | "web_port" => value.parse::<u16>().is_ok(),
             "buffer_mb" => value.parse::<u64>().is_ok(),
+            key if key.starts_with("profile.") && key.ends_with(".delay_ms") => {
+                value.parse::<u32>().is_ok()
+            }
             "target_delay_ms" | "armed_delay_ms" | "auto_arm_delay_ms" => {
                 value.parse::<u32>().is_ok()
             }
@@ -565,16 +568,17 @@ pub fn prepare() -> io::Result<()> {
     // so every enabled provider needs its separately provisioned credential.
     let mut ids = BTreeSet::new();
     for (index, destination) in settings.destinations.iter().enumerate() {
-        let id = fields
+        let declared = fields
             .get(format!("destination.{index}.id").as_str())
-            .filter(|id| !id.is_empty());
-        if destination.enabled && id.is_none() {
+            .is_some_and(|id| !id.is_empty());
+        if destination.enabled && !declared {
             return Err(invalid(
                 "InstantClone: explicit nonempty id required for every enabled destination",
             ));
         }
-        // Telemetry joins rows by id, so retained disabled rows must not alias one.
-        if id.is_some_and(|id| !ids.insert(*id)) {
+        // Telemetry joins rows by id, including disabled rows and the parser's
+        // generated ids for rows that omit one.
+        if !destination.id.is_empty() && !ids.insert(destination.id.as_str()) {
             return Err(invalid("InstantClone: duplicate destination id"));
         }
         if destination.enabled
@@ -634,36 +638,51 @@ fn known_key(key: &str) -> bool {
                 | "audio_track"
         );
     }
-    ["dock.", "hotkey.", "midi.", "profile."]
-        .iter()
-        .any(|prefix| key.starts_with(prefix))
-        || matches!(
-            key,
-            "configured"
-                | "platform"
-                | "custom_egress_url"
-                | "ingest_port"
-                | "ingest_bind_all"
-                | "ingest_key_file"
-                | "web_port"
-                | "web_bind_all"
-                | "dashboard_password_hash_file"
-                | "dock_token_file"
-                | "buffer_mb"
-                | "buffer_path"
-                | "target_delay_ms"
-                | "armed_delay_ms"
-                | "discord_webhook_url_file"
-                | "overlays_dir"
-                | "tracing_enabled"
-                | "auto_arm_on_connect"
-                | "auto_activate_when_ready"
-                | "update_check_enabled"
-                | "open_dashboard_on_launch"
-                | "overlays_seeded"
-                | "auto_arm_delay_ms"
-                | "midi_device"
-        )
+    if let Some(id) = key.strip_prefix("dock.") {
+        return (1..=40).contains(&id.len());
+    }
+    if let Some(action) = key
+        .strip_prefix("hotkey.")
+        .or_else(|| key.strip_prefix("midi."))
+    {
+        return crate::config::ACTIONS.contains(&action);
+    }
+    if let Some((index, field)) = key
+        .strip_prefix("profile.")
+        .and_then(|rest| rest.split_once('.'))
+    {
+        return index
+            .parse::<usize>()
+            .is_ok_and(|n| n < crate::config::MAX_PROFILES && index == n.to_string())
+            && matches!(field, "name" | "delay_ms");
+    }
+    matches!(
+        key,
+        "configured"
+            | "platform"
+            | "custom_egress_url"
+            | "ingest_port"
+            | "ingest_bind_all"
+            | "ingest_key_file"
+            | "web_port"
+            | "web_bind_all"
+            | "dashboard_password_hash_file"
+            | "dock_token_file"
+            | "buffer_mb"
+            | "buffer_path"
+            | "target_delay_ms"
+            | "armed_delay_ms"
+            | "discord_webhook_url_file"
+            | "overlays_dir"
+            | "tracing_enabled"
+            | "auto_arm_on_connect"
+            | "auto_activate_when_ready"
+            | "update_check_enabled"
+            | "open_dashboard_on_launch"
+            | "overlays_seeded"
+            | "auto_arm_delay_ms"
+            | "midi_device"
+    )
 }
 
 /// Opens a regular file owned by this user and unreadable by group or others.
@@ -953,6 +972,9 @@ mod tests {
             "destination.3.stream_key_file",
             "destination.0.custom_egress_url_file",
             "profile.0.delay_ms",
+            "hotkey.toggle",
+            "midi.cut_after",
+            "dock.landscape",
         ] {
             assert!(known_key(key), "{key}");
         }
@@ -960,6 +982,12 @@ mod tests {
             "web_potr",
             "destination.0.stream_kye_file",
             "destination.0.nmae",
+            "profile.0.delay_ms_typo",
+            "profile.256.name",
+            "profile.01.name",
+            "hotkey.tgogle",
+            "midi.unknown",
+            "dock.",
         ] {
             assert!(!known_key(key), "{key}");
         }

@@ -11,7 +11,10 @@ decrypted credentials using `destination.N.stream_key_file` and optionally
 `ingest_key_file=/path/to/ingest-key`; the provisioned key contains only letters,
 numbers, `-` and `_`. Plaintext is read only at process startup. Direct
 `ingest_key` and `stream_key` fields are rejected, including legacy and disabled entries.
+Stream-key and ingest-key files must be regular user-owned files that group and
+others cannot read (mode `0400` or `0600`).
 Each enabled destination requires an explicit, nonempty, unique `destination.N.id`.
+Disabled destinations that keep an id must not reuse another destination's id.
 Destination indexes must be canonical decimal integers from `0` through `127`;
 out-of-range or malformed indexes fail before credential reads or state creation.
 Configuration and application lifecycle changes belong to the service manager.
@@ -20,8 +23,8 @@ Server URLs may have multi-segment application paths; managed mode always append
 the separate stream key. Enabled destinations without that key fail at startup
 before creating managed state; disabled managed destination metadata needs no credential.
 Standalone keeps its existing validation because its dock can enable destinations.
-Do not embed the key in the server URL. Kick also accepts
-a host-only `rtmps://host[:port]` server and adds `/app`. Userinfo, query strings,
+Do not embed the key in the server URL. Kick servers must use `rtmps://`; Kick
+also accepts a host-only `rtmps://host[:port]` server and adds `/app`. Userinfo, query strings,
 fragments, traversal and empty path segments are rejected without echoing values,
 for both inline servers and credential-file servers.
 
@@ -39,6 +42,7 @@ Set `XDG_RUNTIME_DIR` to an existing user-owned private directory. `CONFIG_PATH`
 must be in a dedicated subdirectory of it. Managed templates must explicitly
 set absolute `buffer_path` and `overlays_dir` paths. Traversal and symlinks in
 these state paths are rejected before creating directories or reading secrets.
+`buffer_path` must not name `CONFIG_PATH`, the template or any credential file.
 Existing final state directories must already be user-owned and mode `0700`;
 preparation never changes the permissions of existing directories. Use trusted
 parent directories controlled by the user/service manager for runtime and state.
@@ -107,7 +111,9 @@ private user-owned file (mode `0400` or `0600`). Set
 `dock_token_file=/path/to/this-program-token` in its template, and configure the
 bridge with `INSTANTCLONE_DESK_LANDSCAPE_TOKEN_FILE` and
 `INSTANTCLONE_DESK_PORTRAIT_TOKEN_FILE`. These variables contain file paths,
-never credentials. Peer files are read per request so peer rotation takes effect
+never credentials. A peer token is sent only to a loopback listener owned by the
+same user, so another local account holding the port while a peer restarts
+never receives it. Peer files are read per request so peer rotation takes effect
 without restarting the desk's host relay; restart the rotated target to load its
 new token. Agenix-style symlinks to private credential files are supported.
 

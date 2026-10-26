@@ -77,6 +77,7 @@ def disabled_credentials(binary, root, runtime):
 def unused_custom_urls(binary, root, runtime):
     key = root / 'url-test.key'
     key.write_text('disposable-platform-key')
+    key.chmod(0o600)
     template = root / 'url-template'
     cases = [
         ('twitch', True, ''), ('youtube', True, ''), ('sink', True, ''),
@@ -85,6 +86,8 @@ def unused_custom_urls(binary, root, runtime):
         ('kick', False, 'obsolete-endpoint'),
         ('custom', True, ''), ('kick', True, ''),
         ('custom', True, 'rtmp://user:disposable-platform-key@host/live'),
+        # Kick ingests only over TLS.
+        ('kick', True, 'rtmp://127.0.0.1:1/app'),
     ]
     for index, (platform, enabled, url) in enumerate(cases):
         config = runtime / f'url-instance-{index}/config'
@@ -186,13 +189,13 @@ def url_source_overrides(binary, root, runtime):
     key.write_text('disposable-url-source-key')
     key.chmod(0o600)
     server = root / 'url-source.server'
-    server.write_text('rtmp://127.0.0.1:1/file-app')
+    server.write_text('rtmps://127.0.0.1:1/file-app')
     server.chmod(0o600)
     invalid = root / 'url-source-invalid.server'
     invalid.write_text('retired malformed server\nsecond line')
     invalid.chmod(0o600)
     missing = root / 'url-source-missing.server'
-    inline = 'rtmp://127.0.0.1:1/inline-app'
+    inline = 'rtmps://127.0.0.1:1/inline-app'
     cases = [(f'custom_egress_url_file={stale}\ncustom_egress_url={inline}', inline)
              for stale in [missing, invalid, server]]
     cases += [(f'custom_egress_url={stale}\ncustom_egress_url_file={server}', server.read_text())

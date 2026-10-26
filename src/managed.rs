@@ -84,8 +84,14 @@ fn validate_private_directory(path: &Path) -> io::Result<()> {
 fn secret(path: &Path, name: &str) -> io::Result<String> {
     let error = |reason| invalid(&format!("InstantClone destination '{name}': {reason}"));
     let mut bytes = Vec::new();
-    fs::File::open(path)
-        .and_then(|file| file.take(4099).read_to_end(&mut bytes))
+    let file = open_private(path).map_err(|e| match e.kind() {
+        io::ErrorKind::InvalidInput => {
+            error("stream-key secret must be a private (0600) file owned by this user")
+        }
+        _ => error("stream-key secret is missing or unreadable"),
+    })?;
+    file.take(4099)
+        .read_to_end(&mut bytes)
         .map_err(|_| error("stream-key secret is missing or unreadable"))?;
     if bytes.ends_with(b"\r\n") {
         bytes.truncate(bytes.len() - 2);
@@ -141,9 +147,10 @@ fn validate_server_url(text: &str, name: &str, platform: &str) -> io::Result<()>
     if text.is_empty() || text.len() > 4096 {
         return Err(error());
     }
+    // Kick ingests only over TLS; a plaintext template could never connect.
     let rest = text
-        .strip_prefix("rtmp://")
-        .or_else(|| text.strip_prefix("rtmps://"))
+        .strip_prefix("rtmps://")
+        .or_else(|| text.strip_prefix("rtmp://").filter(|_| platform != "kick"))
         .ok_or_else(error)?;
     let valid = (|| {
         let (authority, app) = rest.split_once('/').unwrap_or((rest, ""));
@@ -219,7 +226,7 @@ pub fn prepare() -> io::Result<()> {
             "InstantClone: CONFIG_PATH must be inside XDG_RUNTIME_DIR",
         ));
     }
-    let text = fs::read_to_string(template)?;
+    let text = fs::read_to_string(&template)?;
     let mut last_declaration = BTreeMap::new();
     let fields: BTreeMap<_, _> = text
         .lines()
@@ -351,6 +358,26 @@ pub fn prepare() -> io::Result<()> {
         } else {
             state_path
         });
+    }
+    // The ring is created with set_len and overwritten with media. It must not
+    // share a file with the rendered config, the template or any credential.
+    let buffer = Path::new(fields["buffer_path"]);
+    let resolve = |value: &str| {
+        let file = value
+            .strip_prefix("${XDG_RUNTIME_DIR}/")
+            .map(|p| Path::new(&runtime).join(p))
+            .unwrap_or_else(|| value.into());
+        fs::canonicalize(&file).unwrap_or(file)
+    };
+    if buffer == path
+        || resolve(&template) == buffer
+        || fields
+            .iter()
+            .any(|(key, value)| key.ends_with("_file") && resolve(value) == buffer)
+    {
+        return Err(invalid(
+            "InstantClone: buffer_path must not alias the runtime config, template or a credential file",
+        ));
     }
     // Validate every destination before any directory creation or secret read.
     for directory in &directories {
@@ -521,18 +548,17 @@ pub fn prepare() -> io::Result<()> {
     // so every enabled provider needs its separately provisioned credential.
     let mut ids = BTreeSet::new();
     for (index, destination) in settings.destinations.iter().enumerate() {
-        if destination.enabled {
-            let id = fields
-                .get(format!("destination.{index}.id").as_str())
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| {
-                    invalid(
-                        "InstantClone: explicit nonempty id required for every enabled destination",
-                    )
-                })?;
-            if !ids.insert(*id) {
-                return Err(invalid("InstantClone: duplicate destination id"));
-            }
+        let id = fields
+            .get(format!("destination.{index}.id").as_str())
+            .filter(|id| !id.is_empty());
+        if destination.enabled && id.is_none() {
+            return Err(invalid(
+                "InstantClone: explicit nonempty id required for every enabled destination",
+            ));
+        }
+        // Telemetry joins rows by id, so retained disabled rows must not alias one.
+        if id.is_some_and(|id| !ids.insert(*id)) {
+            return Err(invalid("InstantClone: duplicate destination id"));
         }
         if destination.enabled
             && destination.platform != "sink"
@@ -568,19 +594,33 @@ pub fn prepare() -> io::Result<()> {
     result
 }
 
-fn private_credential(path: &Path) -> io::Result<String> {
+/// Opens a regular file owned by this user and unreadable by group or others.
+fn open_private(path: &Path) -> io::Result<fs::File> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|_| invalid("InstantClone: control credential unavailable"))?;
+        .open(path)?;
     let meta = file.metadata()?;
     // SAFETY: geteuid has no preconditions.
     if !meta.is_file()
         || meta.uid() != unsafe { libc::geteuid() }
         || meta.permissions().mode() & 0o077 != 0
-        || meta.len() > 256
     {
+        return Err(invalid(
+            "InstantClone: credential must be private and user-owned",
+        ));
+    }
+    Ok(file)
+}
+
+fn private_credential(path: &Path) -> io::Result<String> {
+    let file = open_private(path).map_err(|e| match e.kind() {
+        io::ErrorKind::InvalidInput => {
+            invalid("InstantClone: control credential must be private and user-owned")
+        }
+        _ => invalid("InstantClone: control credential unavailable"),
+    })?;
+    if file.metadata()?.len() > 256 {
         return Err(invalid(
             "InstantClone: control credential must be private and user-owned",
         ));
@@ -694,6 +734,14 @@ pub async fn desk_request(
     };
     let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
         let mut socket = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await?;
+        // Another local user may hold the port while the peer restarts. Only
+        // hand a credential to a listener owned by this user.
+        // SAFETY: geteuid has no preconditions.
+        if !cookie.is_empty()
+            && loopback_peer_uid(socket.local_addr()?.port(), port) != Some(unsafe { libc::geteuid() })
+        {
+            return Err(invalid("unauthenticated relay listener"));
+        }
         let action = if action == "cancel-cut" { "cut-after/cancel" } else { action };
         let request = format!("{method} /{action} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{cookie}Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
         socket.write_all(request.as_bytes()).await?;
@@ -706,6 +754,26 @@ pub async fn desk_request(
         Ok(Ok(response)) => desk_response(&response),
         _ => unavailable(),
     }
+}
+
+/// Owner of the accepted end of our IPv4 loopback connection, from the
+/// kernel's socket table. Accepted sockets inherit the listener's owner.
+fn loopback_peer_uid(local_port: u16, peer_port: u16) -> Option<u32> {
+    let lo = format!("{:08X}", u32::from_ne_bytes([127, 0, 0, 1]));
+    let (peer, local) = (
+        format!("{lo}:{peer_port:04X}"),
+        format!("{lo}:{local_port:04X}"),
+    );
+    fs::read_to_string("/proc/net/tcp")
+        .ok()?
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            (fields.get(1) == Some(&peer.as_str()) && fields.get(2) == Some(&local.as_str()))
+                .then(|| fields.get(7)?.parse().ok())
+                .flatten()
+        })
 }
 
 fn desk_response(response: &str) -> (&'static str, String) {
@@ -835,6 +903,13 @@ mod tests {
             std::env::temp_dir().join(format!("instantclone-secret-test-{}", std::process::id()));
         private_dir(&dir).unwrap();
         let path = dir.join("key");
+        fs::write(&path, b"test-token").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            secret(&path, "test").is_err(),
+            "group/world-readable key accepted"
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         for bytes in [b"test-token".as_slice(), b"test-token\n", b"test-token\r\n"] {
             fs::write(&path, bytes).unwrap();
             assert_eq!(secret(&path, "test").unwrap(), "test-token");
@@ -902,6 +977,29 @@ mod tests {
             assert_eq!(server_url(&path, "test", "kick").unwrap(), text);
             assert!(server_url(&path, "test", "custom").is_err());
         }
+        for text in ["rtmp://host", "rtmp://host:1935/app"] {
+            fs::write(&path, text).unwrap();
+            assert!(
+                server_url(&path, "test", "kick").is_err(),
+                "plaintext Kick URL accepted"
+            );
+        }
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn identifies_the_loopback_listener_owner() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let socket = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let local = socket.local_addr().unwrap().port();
+        // SAFETY: geteuid has no preconditions.
+        assert_eq!(
+            loopback_peer_uid(local, port),
+            Some(unsafe { libc::geteuid() })
+        );
+        assert_eq!(loopback_peer_uid(local, local), None);
     }
 }

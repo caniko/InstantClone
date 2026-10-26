@@ -107,6 +107,7 @@ def run(binary, package_derivation):
             enc = root / f'{i}.age'
             subprocess.run(['age', '-r', recipient, '-o', str(enc)], input=(value + '\n').encode(), check=True)
             subprocess.run(['age', '-d', '-i', str(identity), '-o', str(key_paths[i]), str(enc)], check=True)
+            key_paths[i].chmod(0o600)
 
         def template(path, ingest, web, receivers, program_keys, cache_name):
             lines = [

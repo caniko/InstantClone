@@ -71,6 +71,7 @@ def run(binary, store_template, package_derivation):
             encrypted = root / f'{i}.age'
             subprocess.run(['age', '-r', recipient, '-o', str(encrypted)], input=(value + '\n').encode(), check=True)
             subprocess.run(['age', '-d', '-i', str(identity), '-o', str(key_paths[i]), str(encrypted)], check=True)
+            key_paths[i].chmod(0o600)
         # Destination 1 uses the secret-server profile: its URL is decrypted
         # from its own age file, exactly like a stream key.
         server_url = f'rtmp://127.0.0.1:{receiver_b}/live'
@@ -137,6 +138,11 @@ def run(binary, store_template, package_derivation):
                 ('auto_arm_delay_ms=600001', b'auto_arm_delay_ms'),
                 ('destination.1.id=local-0', b'duplicate destination id'),
                 ('destination.1.id=', b'explicit nonempty id required'),
+                ('destination.2.enabled=false\ndestination.2.id=local-0', b'duplicate destination id'),
+                (f'buffer_path={config}', b'buffer_path must not alias'),
+                (f'buffer_path={template}', b'buffer_path must not alias'),
+                (f'buffer_path={key_paths[0]}', b'buffer_path must not alias'),
+                (f'buffer_path={control_file}', b'buffer_path must not alias'),
                 ('destination.0.stream_key=plaintext-test-key', b'stream_key_file'),
                 ('destination.0.enabled=false\ndestination.0.stream_key=plaintext-test-key', b'stream_key_file'),
                 ('stream_key=plaintext-test-key', b'stream_key_file'),
@@ -169,6 +175,15 @@ def run(binary, store_template, package_derivation):
                 assert not config.exists(), 'invalid declaration persisted a sanitized config'
                 assert b'plaintext-test-key' not in result.stderr, 'invalid declaration exposed credential'
                 assert b'malformed-private-value' not in result.stderr, 'malformed declaration echoed its value'
+            # Stream keys readable by other users are rejected like inline keys.
+            template.write_text(original_template)
+            key_paths[0].chmod(0o644)
+            result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime,
+                                    capture_output=True, timeout=10, check=False)
+            key_paths[0].chmod(0o600)
+            assert result.returncode != 0 and b'private (0600) file' in result.stderr, result.stderr
+            assert not config.exists(), 'public stream key persisted a rendered config'
+            assert keys[0].encode() not in result.stderr
             template.write_text(original_template.replace('destination.0.id=local-0\n', ''))
             result = subprocess.run([binary, '--no-browser'], env=env, cwd=runtime,
                                     capture_output=True, timeout=10, check=False)
@@ -301,6 +316,7 @@ def run(binary, store_template, package_derivation):
                 result = subprocess.run([binary], env=env, cwd=runtime, capture_output=True, timeout=10, check=False)
                 assert result.returncode != 0 and b'missing or unreadable' in result.stderr
                 path.write_text(restored)
+                path.chmod(0o600)
             # Secret server URLs fail closed without echoing their bytes.
             for payload in [b'', b'\n', b'bad\nkey', b'rtmp://127.0.0.1/live?key=secret', b'https://127.0.0.1/live']:
                 server_path.write_bytes(payload)

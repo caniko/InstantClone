@@ -71,6 +71,7 @@ def run(binary):
             ingest, web, receiver = [port() for _ in range(3)]
             key = case / 'key'
             key.write_text('disposable-test-key\n')
+            key.chmod(0o600)
             template = case / 'template'
             ring = case / 'cache/stream.buf'
             template.write_text('\n'.join([

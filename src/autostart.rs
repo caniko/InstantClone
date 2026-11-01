@@ -43,7 +43,7 @@ fn run_command() -> io::Result<String> {
 /// means the same thing to the user either way.
 #[cfg(windows)]
 pub fn is_enabled() -> bool {
-    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
     let subkey = wide(RUN_KEY);
     let name = wide(VALUE_NAME);
     // Null output buffer + null size: asks only "does this value exist,
@@ -70,7 +70,7 @@ pub fn is_enabled() -> bool {
 #[cfg(windows)]
 pub fn set(enabled: bool) -> io::Result<()> {
     use windows_sys::Win32::System::Registry::{
-        RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ,
+        HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW,
     };
     let subkey = wide(RUN_KEY);
     let name = wide(VALUE_NAME);

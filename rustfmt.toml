@@ -1,0 +1,4 @@
+edition = "2021"
+style_edition = "2021"
+# Keep platform-specific import groups stable across rustfmt versions.
+reorder_imports = false

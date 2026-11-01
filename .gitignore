@@ -34,3 +34,4 @@ overlays/*/
 
 # Misc
 *.log
+__pycache__/

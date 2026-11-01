@@ -212,7 +212,7 @@ fn spawn_relauncher(exe: &Path) {
 /// hangs and eventually shows a bogus "port in use" prompt.
 #[cfg(windows)]
 pub fn dont_inherit<S: std::os::windows::io::AsRawSocket>(sock: &S) {
-    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE};
+    use windows_sys::Win32::Foundation::{HANDLE, SetHandleInformation};
     const HANDLE_FLAG_INHERIT: u32 = 0x1;
     unsafe {
         SetHandleInformation(sock.as_raw_socket() as HANDLE, HANDLE_FLAG_INHERIT, 0);
